@@ -284,8 +284,10 @@ export async function prepareSessionWorkspace(params: {
     }
     const root = prepareSessionCreateFilesystemRoot({
       cfg,
-      enforceSandboxContainment: Boolean(project),
-      requestedProjectId: project?.id,
+      // The saved child now carries the locked parent's inherited sandbox requirement.
+      // Registered projects must take the same pre-worktree containment path as clones.
+      enforceSandboxContainment: Boolean(project || saved.projectId),
+      requestedProjectId: project?.id ?? saved.projectId,
       sessionCwd: directory,
       sessionKey,
       targetAgentId: agentId,

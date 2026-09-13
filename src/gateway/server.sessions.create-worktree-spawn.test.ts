@@ -257,6 +257,69 @@ test.each(["registered", "github", "inherited"] as const)(
   },
 );
 
+test.each(["registered", "github"] as const)(
+  "required parent rejects external %s project before worktree allocation with global sandbox off",
+  async (source) => {
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: parentKey, storePath },
+      { ...parent, sandbox: "required" },
+    );
+    const otherRepository = await createRepository("sandbox-external-project");
+    const project = await registerProjectRegistry({ path: otherRepository });
+    projectCloneMocks.materializeProjectClone.mockResolvedValue(project);
+    const { getRuntimeConfig } = await getGatewayConfigModule();
+    const context = createDirectChatContext({
+      getRuntimeConfig,
+      trackExecution: async (run) => await run(),
+    });
+    const createWorktree = vi.spyOn(managedWorktrees, "create");
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: parentKey,
+      config: getRuntimeConfig(),
+      registerRun: vi.fn(),
+      countActiveRuns: () => 0,
+    });
+    dispatchInboundMessageMock.mockResolvedValue({
+      queuedFinal: false,
+      counts: { block: 0, final: 0, tool: 0 },
+    });
+    let childKey: string | undefined;
+    try {
+      const result = await withPluginRuntimeGatewayContextResolver(
+        () => context,
+        () =>
+          tool.execute("required-project", {
+            task: "Read README.md",
+            visible: true,
+            ...(source === "registered"
+              ? { projectId: project.id }
+              : { projectGitUrl: "https://github.com/example/restricted.git" }),
+            worktree: true,
+            worktreeName: "restricted-project-child",
+          }),
+      );
+      if (isRecord(result.details) && typeof result.details.childSessionKey === "string") {
+        childKey = result.details.childSessionKey;
+      }
+      await settleWorkspaceRuns(context, storePath, childKey);
+      const child = childKey
+        ? loadSessionEntry({ agentId: "main", sessionKey: childKey, storePath })
+        : undefined;
+      expect(child).toMatchObject({ sandbox: "required", status: "failed" });
+      expect(createWorktree).not.toHaveBeenCalled();
+      expect(managedWorktrees.findLiveByOwner("session", childKey!)).toBeUndefined();
+      expect(child?.worktree).toBeUndefined();
+      expect(
+        child?.lastRunError ?? (isRecord(result.details) ? result.details.error : undefined),
+      ).toContain("outside the sandboxed agent workspace");
+      expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+    } finally {
+      await settleWorkspaceRuns(context, storePath, childKey, true);
+      dispatchInboundMessageMock.mockReset();
+    }
+  },
+);
+
 test("visible spawn tool preserves project validation and external cwd authorization", async () => {
   const project = await registerProjectRegistry({ path: repository });
   const { getRuntimeConfig } = await getGatewayConfigModule();

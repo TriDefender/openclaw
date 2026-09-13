@@ -15,6 +15,7 @@ import type {
   NormalizedMessage,
   ToolCard,
 } from "../../../lib/chat/chat-types.ts";
+import "../../../components/person-reference.ts";
 import { extractThinkingCached } from "../../../lib/chat/message-extract.ts";
 import {
   isStandaloneToolMessageForDisplay,
@@ -216,7 +217,7 @@ function renderPairingQrExpiryNotices(count: number) {
 }
 
 export function renderGroupedMessage(
-  { message, normalizedMessage, displayMarkdown }: ChatMessageRenderPreparation,
+  { message, normalizedMessage, displayMarkdown, humanMentions }: ChatMessageRenderPreparation,
   messageKey: string,
   opts: {
     isStreaming: boolean;
@@ -333,6 +334,7 @@ export function renderGroupedMessage(
     codeBlockInteraction: role === "assistant" ? "interactive" : "static",
     fileLinks: true,
     githubRepo: role === "assistant" ? (opts.githubRepo ?? null) : null,
+    humanMentions: markdown === displayMarkdown ? humanMentions : undefined,
     interactiveImages: opts.onOpenImage !== undefined,
     sessionLinks: true,
     tableInteractions: "enabled",

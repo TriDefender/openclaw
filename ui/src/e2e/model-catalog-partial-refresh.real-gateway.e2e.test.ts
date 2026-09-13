@@ -131,9 +131,13 @@ suite.define(() => {
           await waitForControlUiGatewayReady(page);
           const composer = page.locator(".agent-chat__input").first();
           const model = composer.locator("[data-chat-model-select]");
+          const selectedModel = composer.locator('[data-chat-model-option="openai/gpt-5.4"]');
+          // Catalog hydration can briefly leave the selected row disabled. A trigger click in
+          // that frame is ignored, so wait for the list to become usable before opening it.
+          await expect.poll(() => selectedModel.isEnabled()).toBe(true);
           await model.click();
           // A failed background refresh must not add chrome above a usable list.
-          await composer.locator('[data-chat-model-option="openai/gpt-5.4"]').waitFor();
+          await expect.poll(() => selectedModel.isVisible()).toBe(true);
           // CLI discovery starts with agent hydration and can outlive model loading.
           await composer
             .locator(

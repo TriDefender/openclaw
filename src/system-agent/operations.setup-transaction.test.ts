@@ -288,72 +288,112 @@ describe("system-agent setup transaction", () => {
     expect(applySetup).toHaveBeenCalledOnce();
     expect(mocks.ensureOnboardingAgent).not.toHaveBeenCalled();
   });
-  it.each(["one agent", "coordinator role", "existing fleet with common specialist names"])(
-    "resumes and completes its pending owner for %s",
-    async (kind) => {
-      setTestEnvValue("OPENCLAW_STATE_DIR", opTempDirs.make("openclaw-recovery-complete-"));
-      const pending = createPendingLocalOnboarding();
-      if (kind !== "one agent") {
-        const config = recoveryTeamConfig(pending);
-        const coordinator = config.agents.entries.coordinator!;
-        config.agents.entries.coordinator = { ...coordinator, workspace: pending.workspace };
-        if (kind === "coordinator role") {
-          config.agents.entries = { coordinator: config.agents.entries.coordinator };
-        } else {
-          config.agents.entries.extra = {
-            workspace: `${pending.workspace}/extra`,
-            subagents: { allowAgents: [] },
-          };
-        }
-        mockConfig.setConfig(config);
-      }
-      const applySetup = vi.fn(async () => createRecoverySetupResult());
-      const beforePersistentApply = vi.fn(() => {});
-      const { runtime } = createSystemAgentTestRuntime();
-
-      const result = await executeSystemAgentOperation({ kind: "setup" }, runtime, {
-        approved: true,
-        deps: createRecoverySetupDeps(applySetup),
-        beforePersistentApply,
-      });
-
-      expect(result.applied).toBe(true);
-      expect(applySetup).toHaveBeenCalledWith(
-        expect.objectContaining({ workspace: pending.workspace, resume: true, surface: "cli" }),
-        { beforePersistentApply },
-      );
-      expect(localOnboarding.complete).toHaveBeenCalledWith({
-        configPath: pending.configPath,
-        runId: pending.runId,
-      });
-      expect(localOnboarding.states.get(pending.configPath)).toMatchObject({
-        status: "completed",
-        runId: pending.runId,
-      });
-      expect(beforePersistentApply).toHaveBeenCalledTimes(2);
-    },
-  );
-
-  it("does not adopt a pending receipt from the replaced config at the same path", async () => {
-    setTestEnvValue("OPENCLAW_STATE_DIR", opTempDirs.make("openclaw-recovery-stale-"));
+  it.each([
+    "one agent",
+    "activation without workspace",
+    "coordinator role",
+    "existing fleet with common specialist names",
+  ])("resumes and completes its pending owner for %s", async (kind) => {
+    setTestEnvValue("OPENCLAW_STATE_DIR", opTempDirs.make("openclaw-recovery-complete-"));
     const pending = createPendingLocalOnboarding();
-    setRecoveryConfig(pending, "2026-08-03T00:00:00.000Z");
-    const applySetup = vi.fn(async () => createRecoverySetupResult());
+    if (kind === "activation without workspace") {
+      mockConfig.setConfig({
+        agents: {
+          defaults: { model: { primary: "openai/gpt-5.5" } },
+          entries: { main: { default: true } },
+        },
+        wizard: { securityAcknowledgedAt: pending.securityAcknowledgedAt },
+      });
+    } else if (kind !== "one agent") {
+      const config = recoveryTeamConfig(pending);
+      const coordinator = config.agents.entries.coordinator!;
+      config.agents.entries.coordinator = { ...coordinator, workspace: pending.workspace };
+      if (kind === "coordinator role") {
+        config.agents.entries = { coordinator: config.agents.entries.coordinator };
+      } else {
+        config.agents.entries.extra = {
+          workspace: `${pending.workspace}/extra`,
+          subagents: { allowAgents: [] },
+        };
+      }
+      mockConfig.setConfig(config);
+    }
+    const applySetup = vi.fn<NonNullable<SystemAgentCommandDeps["applySetup"]>>(async (params) => {
+      params.assertCommitPreconditions?.((await mockConfig.readConfigFileSnapshot()).sourceConfig);
+      if (kind === "activation without workspace") {
+        // Activation may already create the roster; recovery must still pass
+        // the receipt's authority to setup's roster-preserving workspace writer.
+        expect(params.allowWorkspaceChange).toBe(true);
+        setRecoveryConfig(pending);
+      }
+      return createRecoverySetupResult();
+    });
+    const beforePersistentApply = vi.fn(() => {});
     const { runtime } = createSystemAgentTestRuntime();
 
-    const result = await executeSystemAgentOperation(
-      { kind: "setup", workspace: pending.workspace },
-      runtime,
-      { approved: true, deps: createRecoverySetupDeps(applySetup) },
-    );
+    const result = await executeSystemAgentOperation({ kind: "setup" }, runtime, {
+      approved: true,
+      deps: createRecoverySetupDeps(applySetup),
+      beforePersistentApply,
+    });
 
     expect(result.applied).toBe(true);
-    expect(applySetup).toHaveBeenCalledWith(expect.not.objectContaining({ resume: true }), {
-      beforePersistentApply: undefined,
+    expect(applySetup).toHaveBeenCalledWith(
+      expect.objectContaining({ workspace: pending.workspace, resume: true, surface: "cli" }),
+      { beforePersistentApply },
+    );
+    expect(localOnboarding.complete).toHaveBeenCalledWith({
+      configPath: pending.configPath,
+      runId: pending.runId,
     });
-    expect(localOnboarding.complete).not.toHaveBeenCalled();
-    expect(localOnboarding.states.get(pending.configPath)).toEqual(pending);
+    expect(localOnboarding.states.get(pending.configPath)).toMatchObject({
+      status: "completed",
+      runId: pending.runId,
+    });
+    expect(beforePersistentApply).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["replaced configuration", "completed receipt", "remote gateway", "missing receipt"])(
+    "does not adopt workspace authority from a %s",
+    async (kind) => {
+      setTestEnvValue("OPENCLAW_STATE_DIR", opTempDirs.make("openclaw-recovery-stale-"));
+      const pending = createPendingLocalOnboarding();
+      if (kind === "replaced configuration") {
+        setRecoveryConfig(pending, "2026-08-03T00:00:00.000Z");
+      } else if (kind === "completed receipt") {
+        localOnboarding.states.set(pending.configPath, {
+          ...pending,
+          status: "completed",
+          completedAtMs: 2,
+        });
+      } else if (kind === "remote gateway") {
+        const snapshot = await mockConfig.readConfigFileSnapshot();
+        mockConfig.setConfig({ ...snapshot.sourceConfig, gateway: { mode: "remote" } });
+      } else {
+        localOnboarding.states.delete(pending.configPath);
+      }
+      const before = localOnboarding.states.get(pending.configPath);
+      const applySetup = vi.fn(async () => createRecoverySetupResult());
+      const { runtime } = createSystemAgentTestRuntime();
+
+      const result = await executeSystemAgentOperation(
+        { kind: "setup", workspace: pending.workspace },
+        runtime,
+        { approved: true, deps: createRecoverySetupDeps(applySetup) },
+      );
+
+      expect(result.applied).toBe(true);
+      expect(applySetup).toHaveBeenCalledWith(expect.not.objectContaining({ resume: true }), {
+        beforePersistentApply: undefined,
+      });
+      expect(applySetup).toHaveBeenCalledWith(
+        expect.not.objectContaining({ allowWorkspaceChange: true }),
+        expect.anything(),
+      );
+      expect(localOnboarding.complete).not.toHaveBeenCalled();
+      expect(localOnboarding.states.get(pending.configPath)).toEqual(before);
+    },
+  );
 
   it.each(["coordinator", "project-lead"])(
     "completes a team receipt at its approved root with coordinator %s",

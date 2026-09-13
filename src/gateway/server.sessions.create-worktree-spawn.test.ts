@@ -6,6 +6,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ErrorCodes, errorShape } from "../../packages/gateway-protocol/src/index.js";
 import { persistSubagentSessionTiming } from "../agents/subagents/registry/subagent-registry-helpers.js";
+import { createSessionsSpawnTool } from "../agents/tools/sessions-spawn-tool.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import {
   loadSessionEntry,
@@ -15,6 +16,7 @@ import {
 import type { SessionEntry } from "../config/sessions/types.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { withTimeout } from "../infra/fs-safe.js";
+import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import { registerProjectRegistry, removeProjectRegistry } from "../projects/project-registry.js";
 import {
   getSessionWorkAdmissionRelease,
@@ -26,12 +28,20 @@ import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
+import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
+import { settleWorkspaceRuns } from "./server.sessions.create.projects.test-support.js";
 import { dispatchInboundMessageMock, testState } from "./test-helpers.js";
 import {
   directSessionReq,
   getGatewayConfigModule,
   setupGatewaySessionsHandlerTestHarness,
 } from "./test/server-sessions.test-helpers.js";
+
+const projectCloneMocks = vi.hoisted(() => ({
+  materializeProjectClone: vi.fn(),
+  refreshProjectClone: vi.fn(),
+}));
+vi.mock("../projects/project-clone.js", () => projectCloneMocks);
 
 const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
 const execFileAsync = promisify(execFile);
@@ -166,10 +176,132 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  projectCloneMocks.materializeProjectClone.mockReset();
+  projectCloneMocks.refreshProjectClone.mockReset();
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = undefined;
   testState.agentsConfig = undefined;
   await state?.cleanup();
+});
+
+test.each(["registered", "github", "inherited"] as const)(
+  "visible spawn tool selects %s project through the write-scope Gateway",
+  async (source) => {
+    const otherRepository = await createRepository("tool-selected-project");
+    const project = await registerProjectRegistry({ path: otherRepository });
+    projectCloneMocks.materializeProjectClone.mockResolvedValue(project);
+    const { getRuntimeConfig } = await getGatewayConfigModule();
+    const context = createDirectChatContext({
+      getRuntimeConfig,
+      trackExecution: async (run) => await run(),
+    });
+    const registerRun = vi.fn();
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: parentKey,
+      config: getRuntimeConfig(),
+      registerRun,
+      countActiveRuns: () => 0,
+    });
+    dispatchInboundMessageMock.mockResolvedValue({
+      queuedFinal: false,
+      counts: { block: 0, final: 0, tool: 0 },
+    });
+    let childKey: string | undefined;
+    try {
+      const result = await withPluginRuntimeGatewayContextResolver(
+        () => context,
+        () =>
+          tool.execute("select-project", {
+            task: "Read README.md",
+            label: "Selected project child",
+            visible: true,
+            ...(source === "registered"
+              ? { projectId: project.id }
+              : source === "github"
+                ? { projectGitUrl: "git@github.com:example/selected.git" }
+                : {}),
+            worktree: true,
+            worktreeName: "selected-child",
+            worktreeBaseRef: "main",
+          }),
+      );
+      expect(result.details).toMatchObject({ status: "accepted" });
+      if (!isRecord(result.details) || typeof result.details.childSessionKey !== "string") {
+        throw new Error("Missing child session key");
+      }
+      childKey = result.details.childSessionKey;
+      await settleWorkspaceRuns(context, storePath, childKey);
+      const child = loadSessionEntry({ agentId: "main", sessionKey: childKey, storePath });
+      expect(child).toMatchObject({ parentSessionId: parent.sessionId });
+      if (source !== "inherited") {
+        expect(child?.projectId).toBe(project.id);
+      }
+      expect(child?.worktree?.repoRoot).toBe(source === "inherited" ? repository : otherRepository);
+      expect(await fs.readFile(path.join(child!.spawnedCwd!, "README.md"), "utf8")).toBe(
+        source === "inherited" ? "selected-project\n" : "tool-selected-project\n",
+      );
+      if (source === "github") {
+        expect(projectCloneMocks.materializeProjectClone).toHaveBeenCalledWith(
+          expect.objectContaining({ gitUrl: "https://github.com/example/selected.git" }),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        );
+      } else {
+        expect(projectCloneMocks.materializeProjectClone).not.toHaveBeenCalled();
+      }
+      await expect(fs.stat(path.join(child!.spawnedCwd!, "setup-marker.txt"))).rejects.toThrow();
+      expect(registerRun).toHaveBeenCalledOnce();
+    } finally {
+      await settleWorkspaceRuns(context, storePath, childKey, true);
+      dispatchInboundMessageMock.mockReset();
+    }
+  },
+);
+
+test("visible spawn tool preserves project validation and external cwd authorization", async () => {
+  const project = await registerProjectRegistry({ path: repository });
+  const { getRuntimeConfig } = await getGatewayConfigModule();
+  const context = createDirectChatContext({
+    getRuntimeConfig,
+    trackExecution: async (run) => await run(),
+  });
+  const registerRun = vi.fn();
+  const tool = createSessionsSpawnTool({
+    agentSessionKey: parentKey,
+    config: getRuntimeConfig(),
+    registerRun,
+    countActiveRuns: () => 0,
+  });
+  const spawn = (options: Record<string, unknown>) =>
+    withPluginRuntimeGatewayContextResolver(
+      () => context,
+      () => tool.execute("invalid-source", { task: "Read README.md", visible: true, ...options }),
+    );
+  const gitUrl = "https://github.com/example/selected.git";
+  for (const options of [
+    { projectId: project.id, cwd: repository },
+    { projectGitUrl: gitUrl, cwd: repository },
+    { projectId: project.id, projectGitUrl: gitUrl },
+  ]) {
+    await expect(spawn(options)).rejects.toThrow(/cannot be combined/);
+  }
+  for (const projectGitUrl of [
+    "/tmp/repo",
+    "file:///tmp/repo",
+    "https://example.com/repo.git",
+    "not-a-url",
+  ]) {
+    await expect(spawn({ projectGitUrl })).rejects.toThrow(
+      "Use a GitHub HTTPS or git@github.com repository URL",
+    );
+  }
+  await expect(spawn({ projectId: "missing-project" })).rejects.toThrow("unknown project id");
+  const result = await spawn({ cwd: repository, worktree: true });
+  expect(result.details).toMatchObject({
+    status: "forbidden",
+    error: expect.stringContaining("requires operator.admin"),
+  });
+  expect(registerRun).not.toHaveBeenCalled();
+  expect(projectCloneMocks.materializeProjectClone).not.toHaveBeenCalled();
 });
 
 test.each(["managed", "direct"])(

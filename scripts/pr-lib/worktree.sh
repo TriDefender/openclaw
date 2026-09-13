@@ -302,25 +302,19 @@ enter_worktree() {
   # Fetch can launch helpers and mutate Git state even when it fails; leave validation first.
   mark_pr_operation_side_effects_started || return 1
 
-  # Resolve through the parent, never through the leaf: a missing directory has
-  # no real path of its own, and resolving a leaf symlink would silently adopt
-  # whichever worktree it aliases.
   local dir="$root/.worktrees/pr-$pr"
-  local resolved_parent resolved_dir="" initialized_sha=""
-  resolved_parent=$(resolve_existing_dir_path "$(dirname "$dir")" 2>/dev/null || true)
-  [ -z "$resolved_parent" ] || resolved_dir="$resolved_parent/pr-$pr"
+  local resolved_parent resolved_dir state registration initialized_sha=""
+  state=$(pr_worktree_cleanup_state "$dir") || return $?
+  resolved_dir=$(printf '%s\n' "$state" | jq -r '.path') || return $?
+  registration=$(worktree_registration_state "$resolved_dir") || return $?
 
-  if [ ! -d "$dir" ] || [ -z "$resolved_dir" ] || ! worktree_is_registered "$resolved_dir"; then
-    if [ -e "$dir" ] || { [ -n "$resolved_dir" ] && worktree_is_registered "$resolved_dir"; }; then
-      require_worktree_cleanup_evidence "$dir" || return 1
-      echo "Pruning stale worktree registration for .worktrees/pr-$pr"
-      git -C "$root" worktree prune || return 1
-      remove_worktree_if_present "$dir" || return 1
-      [ ! -e "$dir" ] || {
-        echo "Refusing scripts/pr operation for PR #$pr: $dir is not a registered worktree and could not be cleared; scripts/pr refuses to mutate the shared canonical checkout." >&2
-        return 1
-      }
+  if [ "$registration" != registered ] ||
+    ! printf '%s\n' "$state" | jq -e '.present' >/dev/null; then
+    if [ "$registration" = registered ] ||
+      printf '%s\n' "$state" | jq -e '.present or .admin != ""' >/dev/null; then
+      echo "Removing exact stale PR worktree .worktrees/pr-$pr"
     fi
+    remove_worktree_if_present "$dir" || return $?
     # Cold bootstrap needs one extra fetch before private FETCH_HEAD exists.
     # Initialize fully before the next network wait so interruption is retryable.
     # The PR lock owns this existing temp branch, not shared origin/main or FETCH_HEAD.

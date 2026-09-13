@@ -371,8 +371,8 @@ describePosix("scripts/pr worktree containment", () => {
       setup: [],
     },
     {
-      name: "stale registration prune",
-      failure: '[ "$*" = "git -C $fixture_root worktree prune" ]',
+      name: "stale target removal",
+      failure: '[[ "$*" == "git worktree remove "* ]]',
       setup: [
         "git worktree add .worktrees/pr-42 -b temp/pr-42 origin/main",
         "rm -rf .worktrees/pr-42",
@@ -418,18 +418,20 @@ describePosix("scripts/pr worktree containment", () => {
     expect(existsSync(join(fixture.root, ".worktrees", "pr-42", ".local"))).toBe(false);
   });
 
-  it("refuses provisioning when best-effort cleanup leaves the stale directory", () => {
+  it("preserves an unregistered orphan instead of trashing it during provisioning", () => {
     const fixture = createFixture();
     makeStaleWorktreeDir(fixture);
     const marker = join(fixture.root, ".worktrees", "pr-42", "foreign-note");
     writeFileSync(marker, "preserve me\n");
     const result = runShell(fixture, [
-      ...traceEntryCommands('[ "$1" = trash ]'),
+      ...traceEntryCommands("false"),
       "enter_worktree 42 true || exit $?",
     ]);
-    expectEntryStopped(fixture, result);
-    expect(result.stdout).toContain("failed to trash orphaned worktree dir");
-    expect(result.stderr).toContain("could not be cleared");
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    const commands = readFileSync(join(fixture.root, "commands.log"), "utf8");
+    expect(commands).not.toMatch(/(?:worktree (?:prune|remove|add)|trash| fetch )/);
+    expect(result.stderr).toContain("unregistered or ambiguous PR worktree");
+    expectCanonicalCheckoutUnchanged(fixture);
     expect(readFileSync(marker, "utf8")).toBe("preserve me\n");
   });
 
@@ -488,7 +490,7 @@ describePosix("scripts/pr worktree containment", () => {
     const result = runShell(fixture, ["enter_worktree 42 true"]);
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("refuses to mutate the shared canonical checkout");
+    expect(result.stderr).toContain("non-canonical PR-worktree path");
     expect(git(join(worktrees, "pr-99"), "branch", "--show-current")).toBe("temp/pr-99");
     expectCanonicalCheckoutUnchanged(fixture);
   });

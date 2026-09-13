@@ -103,7 +103,7 @@ describe("subagent activity rows", () => {
       progressSummary: "All runs bind `abc123`, **not final** qualification",
       expected: "All runs bind abc123, not final qualification",
     },
-    { lastToolName: "read_file", expected: "read_file" },
+    { lastToolName: "read_file", expected: "Last tool: read_file" },
     { lastActivity: "Inspecting items[0", expected: "Inspecting items[0" },
     {
       status: "completed" as const,
@@ -138,23 +138,44 @@ describe("subagent activity rows", () => {
       title: "  Layout review  ",
       label: "Layout review",
       status: "running" as const,
-      statusLabel: "Running",
+      statusLabel: "Subagent",
     },
     {
       title: "Layout review",
       label: "Layout review",
       status: "completed" as const,
-      statusLabel: "Completed",
+      statusLabel: "Subagent finished",
+    },
+    {
+      title: "Layout review",
+      label: "Layout review",
+      status: "running" as const,
+      execution: { state: "waiting" as const },
+      statusLabel: "Subagent waiting",
+    },
+    {
+      title: "Layout review",
+      label: "Layout review",
+      status: "running" as const,
+      execution: { state: "finished" as const },
+      statusLabel: "Execution finished",
+    },
+    {
+      title: "Layout review",
+      label: "Layout review",
+      status: "completed" as const,
+      deliveryStatus: "session_queued" as const,
+      statusLabel: "Subagent result ready",
     },
     { title: "", label: "Subagent", status: "running" as const, statusLabel: undefined },
     { title: undefined, label: "Subagent", status: "running" as const, statusLabel: undefined },
     { title: " \n ", label: "Subagent failed", status: "failed" as const, statusLabel: undefined },
-  ])("opens $label activity with $status status", ({ title, label, status, statusLabel }) => {
+  ])("opens $label activity with $statusLabel status", ({ label, statusLabel, ...taskProps }) => {
     const task = makeTask({
       id: "clickable-subagent",
-      title,
-      status,
+      ...taskProps,
       lastActivity: "Checking spacing",
+      terminalSummary: "Checking spacing",
     });
     const onOpenTaskDetail = vi.fn();
     const container = renderStatusRow({
@@ -179,7 +200,7 @@ describe("subagent activity rows", () => {
       "Checking spacing",
     );
     expect(row?.getAttribute("aria-label")).toBe(
-      `Open subagent details for ${title?.trim() || "Subagent"}`,
+      `Open subagent details for ${task.title?.trim() || "Subagent"}`,
     );
     row?.click();
     expect(onOpenTaskDetail).toHaveBeenCalledWith(task);
@@ -259,7 +280,7 @@ describe("subagent activity rows", () => {
     });
     expect(container.querySelectorAll(".chat-subagent-activity__row")).toHaveLength(2);
     expect(container.textContent).toContain("Reviewing the current session");
-    expect(container.textContent).toContain("Completed");
+    expect(container.textContent).toContain("Subagent finished");
     expect(container.textContent).not.toContain("Wrong requester");
     expect(container.textContent).not.toContain("Too old");
     expect(container.querySelector(".chat-tasks-status__link")?.textContent?.trim()).toBe(
@@ -316,6 +337,8 @@ describe("subagent activity rows", () => {
         status: "cancelled",
         updatedAt: 100_000,
         endedAt: 100_000,
+        lastToolName: "read_file",
+        progressSummary: "Outdated progress",
       }),
     });
     const props = createBackgroundTasksProps(host);
@@ -330,8 +353,10 @@ describe("subagent activity rows", () => {
     const renderCurrent = () =>
       render(html`${renderBackgroundTasksStatusRow(createBackgroundTasksProps(host))}`, container);
     renderCurrent();
-    expect(container.textContent).toContain("Cancelled");
+    expect(container.textContent).toContain("Subagent cancelled");
     expect(container.textContent).not.toContain("Editing the final report");
+    expect(container.textContent).not.toContain("Outdated progress");
+    expect(container.textContent).not.toContain("read_file");
     expect(container.querySelector(".chat-diffstat")).toBeNull();
 
     requestUpdate.mockClear();

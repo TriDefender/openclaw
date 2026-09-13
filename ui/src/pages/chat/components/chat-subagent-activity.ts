@@ -5,13 +5,9 @@ import { repeat } from "lit/directives/repeat.js";
 import remend from "remend";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
-import {
-  isActiveTask,
-  sortTasks,
-  taskStatusLabel,
-  taskTimestampMs,
-} from "../../../lib/tasks/data.ts";
+import { isActiveTask, sortTasks, taskTimestampMs } from "../../../lib/tasks/data.ts";
 import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
+import { backgroundTaskIsExecuting } from "./chat-background-tasks-shared.ts";
 
 const SUBAGENT_ACTIVITY_LIMIT = 5;
 const SUBAGENT_ACTIVITY_TERMINAL_RETENTION_MS = 60_000;
@@ -76,25 +72,51 @@ export function deriveSubagentActivity(params: {
 
 function subagentActivityLabel(task: TaskSummary): string {
   if (isActiveTask(task)) {
+    if (task.execution?.state === "waiting") {
+      return t("chat.backgroundTasks.subagentActivity.waiting");
+    }
+    if (task.execution?.state === "unknown") {
+      return t("chat.backgroundTasks.subagentActivity.unknown");
+    }
+    if (task.execution?.state === "finished") {
+      return t("chat.backgroundTasks.executionFinished");
+    }
+    if (task.status === "queued" || task.execution?.state === "queued") {
+      return t("chat.backgroundTasks.subagentActivity.queued");
+    }
     return t("chat.backgroundTasks.subagentActivity.running");
   }
   if (task.status === "cancelled") {
     return t("chat.backgroundTasks.subagentActivity.cancelled");
   }
-  if (task.status === "failed" || task.status === "timed_out") {
+  if (task.status === "timed_out") {
+    return t("chat.backgroundTasks.subagentActivity.timedOut");
+  }
+  if (task.status === "failed") {
     return t("chat.backgroundTasks.subagentActivity.failed");
+  }
+  if (task.deliveryStatus === "pending" || task.deliveryStatus === "session_queued") {
+    return t("chat.backgroundTasks.subagentActivity.resultReady");
+  }
+  if (task.deliveryStatus === "delivered") {
+    return t("chat.backgroundTasks.subagentActivity.delivered");
+  }
+  if (task.deliveryStatus === "failed" || task.deliveryStatus === "parent_missing") {
+    return t("chat.backgroundTasks.subagentActivity.deliveryFailed");
   }
   return t("chat.backgroundTasks.subagentActivity.finished");
 }
 
 function subagentActivitySnippet(task: TaskSummary): string | undefined {
-  if (!isActiveTask(task) && task.terminalSummary?.trim()) {
-    return task.terminalSummary.trim();
+  if (!isActiveTask(task)) {
+    return task.terminalSummary?.trim() || task.error?.trim() || undefined;
   }
   return (
     task.lastActivity?.trim() ||
     task.progressSummary?.trim() ||
-    task.lastToolName?.trim() ||
+    (task.lastToolName?.trim()
+      ? `${t("chat.backgroundTasks.lastTool")}: ${task.lastToolName.trim()}`
+      : undefined) ||
     undefined
   );
 }
@@ -102,12 +124,15 @@ function subagentActivitySnippet(task: TaskSummary): string | undefined {
 function renderSubagentActivityIndicator(task: TaskSummary): TemplateResult {
   if (isActiveTask(task)) {
     return html`<span
-      class="chat-subagent-activity__indicator chat-reading-indicator"
+      class="chat-subagent-activity__indicator ${backgroundTaskIsExecuting(task) ? "chat-reading-indicator" : ""}"
       aria-hidden="true"
       >${icons.claw}</span
     >`;
   }
-  const failed = task.status !== "completed";
+  const failed =
+    task.status !== "completed" ||
+    task.deliveryStatus === "failed" ||
+    task.deliveryStatus === "parent_missing";
   return html`<span
     class="chat-subagent-activity__indicator chat-subagent-activity__indicator--${
       failed ? "failed" : "finished"
@@ -142,7 +167,7 @@ function renderSubagentActivityRow(
   const content = html`
     ${renderSubagentActivityIndicator(task)}
     <span class="chat-subagent-activity__label" title=${label}>${label}</span>
-    ${title ? html`<span class="chat-subagent-activity__status">${taskStatusLabel(task.status)}</span>` : nothing}
+    ${title ? html`<span class="chat-subagent-activity__status">${subagentActivityLabel(task)}</span>` : nothing}
     ${keyed(
       `${task.status}:${snippet ?? ""}`,
       html`<span

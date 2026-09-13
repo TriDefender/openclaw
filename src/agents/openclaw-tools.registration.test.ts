@@ -552,7 +552,7 @@ describe("sessions_yield completion ownership", () => {
       expect(result.details).toMatchObject({
         status: "error",
         error:
-          "No pending child completion is owned by this turn. Continue working because independent background operations complete separately.",
+          'No pending child completion is owned by this turn. If the assigned work is complete, return its result normally. An unfinished subagent waiting for an incoming continuation must explicitly set waitFor: "message".',
       });
       expect(markRequesterTurnYielded).toHaveBeenCalledOnce();
       expect(onYield).not.toHaveBeenCalled();
@@ -561,7 +561,7 @@ describe("sessions_yield completion ownership", () => {
     }
   });
 
-  it("accepts a subagent self-yield without a pending child completion", async () => {
+  it("accepts an explicit incoming-message wait without a pending child completion", async () => {
     const registry = await import("./subagents/registry/subagent-registry.js");
     const markRequesterTurnYielded = vi
       .spyOn(registry, "markRequesterTurnYielded")
@@ -582,7 +582,7 @@ describe("sessions_yield completion ownership", () => {
         "sessions_yield",
       );
 
-      await expect(tool.execute("yield-subagent", {})).resolves.toMatchObject({
+      await expect(tool.execute("yield-subagent", { waitFor: "message" })).resolves.toMatchObject({
         details: { status: "yielded" },
       });
       expect(markRequesterTurnYielded).toHaveBeenCalledExactlyOnceWith({

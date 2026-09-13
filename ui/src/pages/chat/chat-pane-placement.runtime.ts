@@ -7,6 +7,10 @@ import type { ApplicationPlacementStartup } from "../../app/session-placement-st
 import { requestCloudWorkerStop } from "../../components/cloud-worker-stop.runtime.ts";
 import { resolveCloudWorkerStopAction } from "../../components/cloud-worker-stop.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
+import {
+  confirmContinueSessionOnGateway,
+  requestContinueSessionOnGateway,
+} from "../../components/session-placement-recovery.runtime.ts";
 import { t } from "../../i18n/index.ts";
 import { readSessionMethodAccess } from "../../lib/session-method-access.ts";
 import type { SessionCapability } from "../../lib/sessions/session-capability.ts";
@@ -116,12 +120,8 @@ export async function moveChatPanePlacement(params: {
     placement.runner?.kind === "device" && placement.runner.status === "offline";
   let target: SessionMoveTarget | null;
   if (abandonSource) {
-    const confirmed = await showConfirmDialog({
-      message: t("sessionsView.continueOnGatewayConfirm", {
-        session: params.row.label || params.row.key,
-      }),
-      confirmLabel: t("sessionsView.continueOnGatewayAction"),
-      danger: true,
+    const confirmed = await confirmContinueSessionOnGateway({
+      label: params.row.label || params.row.key,
     });
     target = confirmed ? { kind: "gateway" } : null;
   } else {
@@ -141,17 +141,29 @@ export async function moveChatPanePlacement(params: {
   }
   params.onMovingChange(params.row.key);
   try {
-    await client.request("sessions.move", {
-      key: params.row.key,
-      ...(agentId ? { agentId } : {}),
-      expected: {
-        generation: placement.generation,
-        environmentId: placement.environmentId,
-        ownerEpoch: placement.activeOwnerEpoch,
-      },
-      target,
-      ...(abandonSource ? { abandonSource: true } : {}),
-    });
+    if (abandonSource) {
+      await requestContinueSessionOnGateway({
+        client,
+        key: params.row.key,
+        ...(agentId ? { agentId } : {}),
+        expected: {
+          generation: placement.generation,
+          environmentId: placement.environmentId,
+          ownerEpoch: placement.activeOwnerEpoch,
+        },
+      });
+    } else {
+      await client.request("sessions.move", {
+        key: params.row.key,
+        ...(agentId ? { agentId } : {}),
+        expected: {
+          generation: placement.generation,
+          environmentId: placement.environmentId,
+          ownerEpoch: placement.activeOwnerEpoch,
+        },
+        target,
+      });
+    }
     if (params.isCurrent(client, params.connectionGeneration)) {
       await params.refreshReplacement(agentId);
     }

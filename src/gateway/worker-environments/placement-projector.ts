@@ -13,6 +13,7 @@ import type { WorkerEnvironmentServiceContract } from "./service-contract.js";
 export type WorkerSessionPlacementReader = {
   getMany(sessionIds: readonly string[]): ReadonlyMap<string, WorkerSessionPlacementRecord>;
   getWorkspaceResultReconcilingSessionIds?(sessionIds: readonly string[]): ReadonlySet<string>;
+  listPendingWorkspaceResults?(): import("./placement-workspace-result.js").WorkerWorkspacePendingResult[];
   /** Runtime consumers may cancel work when the exact captured turn claim closes. */
   registerTurnClaimClosedHandler?: (
     handler: (claim: import("./placement-record.js").WorkerSessionTurnClaim) => void,

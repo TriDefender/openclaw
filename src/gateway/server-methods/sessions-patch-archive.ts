@@ -34,6 +34,7 @@ import {
   prepareSessionLifecycleDrain,
   type SessionLifecycleDrain,
 } from "./sessions-lifecycle-drain.js";
+import { SessionLifecycleWorkspaceRecoveryError } from "./sessions-lifecycle-recovery.js";
 import {
   sessionChangedError as archiveChangedError,
   unexpectedPatchError,
@@ -272,6 +273,9 @@ export async function prepareSessionPatchArchive(params: {
       ...(fresh.entry ? { entry: fresh.entry } : {}),
     });
   } catch (error) {
+    if (error instanceof SessionLifecycleWorkspaceRecoveryError) {
+      return err(error.error);
+    }
     if (error instanceof SessionWorkerPlacementStopError) {
       return err(errorShape(ErrorCodes.UNAVAILABLE, error.message, { retryable: true }));
     }

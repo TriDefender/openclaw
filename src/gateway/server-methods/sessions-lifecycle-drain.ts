@@ -40,6 +40,10 @@ import {
   abortChatRunsForSessionKeyWithPartials,
   hasGatewaySessionAbortOwner,
 } from "./chat-abort-runtime.js";
+import {
+  resolveSessionLifecycleWorkspaceRecoveryError,
+  SessionLifecycleWorkspaceRecoveryError,
+} from "./sessions-lifecycle-recovery.js";
 import type { GatewayRequestContext } from "./types.js";
 
 type LifecyclePlacementService = NonNullable<
@@ -206,6 +210,14 @@ export async function prepareSessionLifecycleDrain(
     }
 
     params.authorize?.();
+    const workspaceRecoveryError = resolveSessionLifecycleWorkspaceRecoveryError({
+      context: params.context,
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+    });
+    if (workspaceRecoveryError) {
+      throw new SessionLifecycleWorkspaceRecoveryError(workspaceRecoveryError);
+    }
     const { released: admittedWork } = startSessionWorkAdmissionInterruption({
       scope: params.storePath,
       identities: params.lifecycleIdentities,

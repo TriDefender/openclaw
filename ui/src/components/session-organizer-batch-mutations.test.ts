@@ -483,9 +483,30 @@ describe("patchSessionRows", () => {
 type OperationsHarness = ReturnType<typeof createHarness>;
 
 const destructiveHarness = {
-  methods: ["sessions.delete", "sessions.reclaim", "sessions.groups.delete"],
+  methods: [
+    "sessions.delete",
+    "sessions.move",
+    "sessions.patch",
+    "sessions.reclaim",
+    "sessions.groups.delete",
+  ],
   scopes: ["operator.write", "operator.admin"],
 };
+
+function workspaceRecoveryError(row: SidebarRecentSession) {
+  return new GatewayRequestError({
+    code: "UNAVAILABLE",
+    message: "Reconnect the device or use Continue on Gateway.",
+    retryable: false,
+    details: {
+      code: "SESSION_WORKSPACE_RECOVERY_REQUIRED",
+      cause: "device_offline",
+      recoveryAction: "continue_on_gateway",
+      sessionId: row.sessionId,
+      source: { generation: 5, environmentId: "environment-1", ownerEpoch: 70 },
+    },
+  });
+}
 
 function cloudWorkerRow(hasActiveRun: boolean): SidebarRecentSession {
   return {
@@ -611,6 +632,73 @@ describe("session organizer destructive confirmations", () => {
       "Managed Worktrees:\nopenclaw/busy — live run or cleanup active",
     );
     alertSpy.mockRestore();
+  });
+
+  it("routes an archive blocker through explicit Continue on Gateway before retrying", async () => {
+    const harness = createHarness(destructiveHarness);
+    const row = sessionRow(0);
+    harness.patch.mockRejectedValueOnce(workspaceRecoveryError(row));
+    harness.request.mockResolvedValueOnce({ ok: true } as never);
+
+    const pending = patchSession(harness.host, row, { archived: true }, harness.scope);
+    const actions = await waitForConfirmDialogActions();
+    expect(document.body.textContent).toContain(
+      "Unsynced device files and in-flight work may be lost",
+    );
+    answerConfirmDialog(actions, "confirm");
+
+    await expect(pending).resolves.toBe("completed");
+    expect(harness.request).toHaveBeenCalledWith("sessions.move", {
+      key: row.key,
+      agentId: "main",
+      expected: { generation: 5, environmentId: "environment-1", ownerEpoch: 70 },
+      target: { kind: "gateway" },
+      abandonSource: true,
+    });
+    expect(harness.patch).toHaveBeenCalledTimes(2);
+    expect(harness.refreshReplacement).toHaveBeenCalledWith("main");
+    expect(harness.publishSessionMutationError).not.toHaveBeenCalled();
+  });
+
+  it("routes a delete blocker through explicit Continue on Gateway before retrying", async () => {
+    const harness = createHarness(destructiveHarness);
+    const row = sessionRow(0);
+    harness.deleteOne.mockRejectedValueOnce(workspaceRecoveryError(row));
+    harness.request.mockResolvedValueOnce({ ok: true } as never);
+
+    const pending = deleteSession(harness.host, row, harness.scope);
+    answerConfirmDialog(await waitForConfirmDialogActions(), "confirm");
+    const recoveryActions = await waitForConfirmDialogActions();
+    expect(document.body.textContent).toContain("last Gateway-synced state");
+    answerConfirmDialog(recoveryActions, "confirm");
+    await pending;
+
+    expect(harness.request).toHaveBeenCalledWith("sessions.move", {
+      key: row.key,
+      agentId: "main",
+      expected: { generation: 5, environmentId: "environment-1", ownerEpoch: 70 },
+      target: { kind: "gateway" },
+      abandonSource: true,
+    });
+    expect(harness.deleteOne).toHaveBeenCalledTimes(2);
+    expect(harness.refreshReplacement).toHaveBeenCalledWith("main");
+    expect(harness.publishSessionMutationError).not.toHaveBeenCalled();
+  });
+
+  it("does not abandon a pending workspace when recovery consent is declined", async () => {
+    const harness = createHarness(destructiveHarness);
+    const row = sessionRow(0);
+    const error = workspaceRecoveryError(row);
+    harness.deleteOne.mockRejectedValueOnce(error);
+
+    const pending = deleteSession(harness.host, row, harness.scope);
+    answerConfirmDialog(await waitForConfirmDialogActions(), "confirm");
+    answerConfirmDialog(await waitForConfirmDialogActions(), "cancel");
+    await pending;
+
+    expect(harness.request).not.toHaveBeenCalled();
+    expect(harness.deleteOne).toHaveBeenCalledOnce();
+    expect(harness.publishSessionMutationError).toHaveBeenCalledWith(harness.scope, error);
   });
 
   it.each(destructiveOperations)("sends no $name request when cancelled", async (operation) => {

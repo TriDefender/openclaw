@@ -39,6 +39,7 @@ export const GatewayErrorDetailCodes = {
   WIZARD_NOT_FOUND: "WIZARD_NOT_FOUND",
   SETUP_ADMISSION_BUSY: "SETUP_ADMISSION_BUSY",
   GITHUB_PUBLICATION_SELECTION_REJECTED: "GITHUB_PUBLICATION_SELECTION_REJECTED",
+  SESSION_WORKSPACE_RECOVERY_REQUIRED: "SESSION_WORKSPACE_RECOVERY_REQUIRED",
 } as const;
 
 /** Missing cron automation identified by its exact store key. */
@@ -111,6 +112,19 @@ export type SkillProposalRevisionChangedErrorDetails = {
   currentRevisionHash: string;
 };
 
+/** Exact retained workspace owner that must be recovered or explicitly abandoned. */
+export type SessionWorkspaceRecoveryRequiredErrorDetails = {
+  code: typeof GatewayErrorDetailCodes.SESSION_WORKSPACE_RECOVERY_REQUIRED;
+  cause: "device_offline";
+  recoveryAction: "continue_on_gateway";
+  sessionId: string;
+  source: {
+    generation: number;
+    environmentId: string;
+    ownerEpoch: number;
+  };
+};
+
 /** Structured details emitted by method-level failures. */
 export type GatewayErrorDetails =
   | CronJobNotFoundErrorDetails
@@ -123,7 +137,8 @@ export type GatewayErrorDetails =
   | UnknownAgentIdErrorDetails
   | WizardNotFoundErrorDetails
   | SetupAdmissionBusyErrorDetails
-  | GitHubPublicationSelectionRejectedErrorDetails;
+  | GitHubPublicationSelectionRejectedErrorDetails
+  | SessionWorkspaceRecoveryRequiredErrorDetails;
 
 type GatewayErrorLike = {
   code?: unknown;
@@ -147,6 +162,45 @@ export function readGitHubPublicationSelectionRejectedError(
     details.idempotencyKey.length > 0
     ? { code: details.code, idempotencyKey: details.idempotencyKey }
     : null;
+}
+
+/** Reads an exact pending-workspace recovery route without parsing operator-facing prose. */
+export function readSessionWorkspaceRecoveryRequiredError(
+  error: unknown,
+): SessionWorkspaceRecoveryRequiredErrorDetails | null {
+  const record = asProtocolRecord(error);
+  const details = asProtocolRecord(record?.details);
+  const source = asProtocolRecord(details?.source);
+  const gatewayCode = typeof record?.gatewayCode === "string" ? record.gatewayCode : record?.code;
+  if (
+    gatewayCode !== ErrorCodes.UNAVAILABLE ||
+    details?.code !== GatewayErrorDetailCodes.SESSION_WORKSPACE_RECOVERY_REQUIRED ||
+    details.cause !== "device_offline" ||
+    details.recoveryAction !== "continue_on_gateway" ||
+    typeof details.sessionId !== "string" ||
+    details.sessionId.length === 0 ||
+    typeof source?.generation !== "number" ||
+    !Number.isSafeInteger(source.generation) ||
+    source.generation < 0 ||
+    typeof source.environmentId !== "string" ||
+    source.environmentId.length === 0 ||
+    typeof source.ownerEpoch !== "number" ||
+    !Number.isSafeInteger(source.ownerEpoch) ||
+    source.ownerEpoch < 1
+  ) {
+    return null;
+  }
+  return {
+    code: GatewayErrorDetailCodes.SESSION_WORKSPACE_RECOVERY_REQUIRED,
+    cause: "device_offline",
+    recoveryAction: "continue_on_gateway",
+    sessionId: details.sessionId,
+    source: {
+      generation: source.generation,
+      environmentId: source.environmentId,
+      ownerEpoch: source.ownerEpoch,
+    },
+  };
 }
 
 /** Reads a typed cron lookup miss without parsing operator-facing prose. */

@@ -36,6 +36,7 @@ import {
   prepareSessionLifecycleDrain,
   type SessionLifecycleDrain,
 } from "./sessions-lifecycle-drain.js";
+import { SessionLifecycleWorkspaceRecoveryError } from "./sessions-lifecycle-recovery.js";
 import {
   loadAccessorSessionEntryForGatewayTarget,
   loadSessionsRuntimeModule,
@@ -210,6 +211,9 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
           assertCurrent();
           if (error instanceof SessionDeletionError) {
             throw error;
+          }
+          if (error instanceof SessionLifecycleWorkspaceRecoveryError) {
+            throw new SessionDeletionError(error.error);
           }
           throw new SessionDeletionError(
             errorShape(

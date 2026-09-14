@@ -262,6 +262,7 @@ describe("createGatewayRequestContext", () => {
       const subscriptions = startGatewayEventSubscriptions({
         ...broadcaster,
         log: params.log,
+        nodeHasSessionSubscribers: () => false,
         nodeSendToSession: vi.fn(),
         agentRunSeq: new Map(),
         chatRunState,

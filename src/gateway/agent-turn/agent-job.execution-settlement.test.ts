@@ -85,20 +85,39 @@ describe("waitForAgentJob settled execution", () => {
     { status: "timeout", stopReason: "timeout", timeoutPhase: "provider", providerStarted: true },
     { status: "error", stopReason: "rpc" },
   ] as const)("preserves lifecycle $stopReason after the chat barrier", async (outcome) => {
-    const runId = `chat-sticky-reply-${runSequence++}`;
-    const terminalReply = { disposition: "visible", text: "Partial output" } as const;
-    const waiter = waitForAgentJob({ runId, source: "chat", timeoutMs: 60_000 });
-    emitAgentEvent({
-      runId,
-      stream: "lifecycle",
-      data: { phase: "end", executionSettled: true, endedAt: 100, ...outcome, terminalReply },
-    });
-    setGatewayDedupeEntry({
-      dedupe: new Map<string, DedupeEntry>(),
-      key: `chat:${runId}`,
-      entry: { ts: Date.now(), ok: true, payload: { runId, status: "ok", endedAt: 200 } },
-    });
-    await expect(waiter).resolves.toMatchObject({ ...outcome, terminalReply });
+    for (const lifecycleFirst of [true, false]) {
+      const runId = `chat-sticky-reply-${runSequence++}`;
+      const terminalReply = { disposition: "visible", text: "Partial output" } as const;
+      const recordLifecycle = () =>
+        emitAgentEvent({
+          runId,
+          stream: "lifecycle",
+          data: { phase: "end", executionSettled: true, endedAt: 100, ...outcome, terminalReply },
+        });
+      const waiter = lifecycleFirst
+        ? waitForAgentJob({ runId, source: "chat", timeoutMs: 60_000 })
+        : undefined;
+      if (lifecycleFirst) {
+        recordLifecycle();
+      }
+      setGatewayDedupeEntry({
+        dedupe: new Map<string, DedupeEntry>(),
+        key: `chat:${runId}`,
+        entry: { ts: Date.now(), ok: true, payload: { runId, status: "ok", endedAt: 200 } },
+      });
+      if (!lifecycleFirst) {
+        recordLifecycle();
+      }
+      if (waiter) {
+        await expect(waiter).resolves.toMatchObject({ ...outcome, terminalReply });
+      }
+      await expect(waitForAgentJob({ runId, source: "chat", timeoutMs: 0 })).resolves.toMatchObject(
+        {
+          ...outcome,
+          terminalReply,
+        },
+      );
+    }
   });
 
   it.each(["ok", "error", "timeout"] as const)(

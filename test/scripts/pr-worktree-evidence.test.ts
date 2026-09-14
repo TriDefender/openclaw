@@ -264,7 +264,9 @@ describePosix("native worktree cleanup preserves merge evidence", () => {
       expect(f.branches()).toBe(branches);
       expect(result.status, result.output).not.toBe(0);
       expect(result.output).not.toContain("unexpected-entry-completed");
-      expect(result.output).toContain("reconcile the earlier request manually");
+      expect(result.output).toContain(
+        "Refusing PR worktree cleanup: unregistered or ambiguous PR worktree; scripts/pr refuses to mutate the shared canonical checkout",
+      );
       expect(existsSync(join(f.root, "trash"))).toBe(false);
       expect(f.outcomes()).toBe("");
     },

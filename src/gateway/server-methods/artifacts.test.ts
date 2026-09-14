@@ -959,7 +959,7 @@ describe("artifacts RPC handlers", () => {
     const downloaded = expectOkPayload(
       (await downloadArtifact({ ...filteredQuery, artifactId })).calls,
     );
-    expectFields(downloaded, { data: "Ynl0ZXM=", artifact: { id: artifactId, title: "file 3" } });
+    expectFields(downloaded, { data: "Ynl0ZXM=", artifact: all?.[2] });
   });
 
   it.each(["artifacts.list", "artifacts.get", "artifacts.download"] as const)(

@@ -2880,6 +2880,77 @@ describePosix("scripts/pr per-PR operation lock", () => {
     ]);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
+  it.each(["pr-42", "temp/pr-42", "pr-42-prep"])(
+    "does not confuse absent branch %s with a checked-out descendant",
+    (branch) => {
+      const repoDir = createRepo();
+      const sibling = join(repoDir, ".worktrees", "pr-99");
+      execFileSync("git", ["worktree", "add", "-q", "-b", `${branch}/topic`, sibling], {
+        cwd: repoDir,
+      });
+      const otherBranch = branch === "pr-42-prep" ? "pr-42" : "pr-42-prep";
+      execFileSync("git", ["branch", otherBranch], { cwd: repoDir });
+      const head = execFileSync("git", ["rev-parse", `refs/heads/${branch}/topic`], {
+        cwd: repoDir,
+        encoding: "utf8",
+      });
+      const result = runLockShell(repoDir, [
+        'cleanup_pr_worktree ".worktrees/pr-42" || exit $?',
+        "echo cleanup-completed",
+      ]);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain("cleanup-completed");
+      expect(
+        execFileSync("git", ["rev-parse", `refs/heads/${branch}/topic`], {
+          cwd: repoDir,
+          encoding: "utf8",
+        }),
+      ).toBe(head);
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: sibling, encoding: "utf8" })).toBe(
+        head,
+      );
+      expectWorktreeBranch(sibling, `${branch}/topic`);
+      expect(
+        spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${otherBranch}`], {
+          cwd: repoDir,
+        }).status,
+      ).toBe(1);
+    },
+  );
+  it.each(["pr-42", "temp/pr-42", "pr-42-prep"])(
+    "verifies only the exact branch %s after native deletion",
+    (branch) => {
+      const repoDir = createRepo();
+      const sibling = join(repoDir, ".worktrees", "pr-99");
+      execFileSync("git", ["branch", branch], { cwd: repoDir });
+      const head = execFileSync("git", ["rev-parse", `refs/heads/${branch}`], {
+        cwd: repoDir,
+        encoding: "utf8",
+      });
+      const result = runLockShell(repoDir, [
+        "git() {",
+        '  command git "$@" || return $?',
+        `  if [ "$*" = "branch -D -- ${branch}" ]; then`,
+        `    command git worktree add -q -b ${branch}/topic .worktrees/pr-99 || return $?`,
+        "  fi",
+        "}",
+        `delete_local_branch_if_safe ${branch} || exit $?`,
+        "echo cleanup-completed",
+      ]);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain("cleanup-completed");
+      expect(
+        execFileSync("git", ["rev-parse", `refs/heads/${branch}/topic`], {
+          cwd: repoDir,
+          encoding: "utf8",
+        }),
+      ).toBe(head);
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: sibling, encoding: "utf8" })).toBe(
+        head,
+      );
+      expectWorktreeBranch(sibling, `${branch}/topic`);
+    },
+  );
   it.each([0, 23])("rejects truncated listings without masking Git status %s", (code) => {
     const repoDir = createRepo();
     const result = runLockShell(repoDir, [

@@ -304,7 +304,7 @@ enter_worktree() {
 
   local dir="$root/.worktrees/pr-$pr"
   local resolved_parent resolved_dir state registration initialized_sha=""
-  state=$(pr_worktree_cleanup_state "$dir") || return $?
+  state=$(pr_worktree_state "$dir" "" entry) || return $?
   resolved_dir=$(printf '%s\n' "$state" | jq -r '.path') || return $?
   registration=$(worktree_registration_state "$resolved_dir") || return $?
 
@@ -324,6 +324,9 @@ enter_worktree() {
     resolved_parent=$(resolve_existing_dir_path "$(dirname "$dir")") || return 1
     resolved_dir="$resolved_parent/pr-$pr"
     initialized_sha=$(git -C "$dir" rev-parse --verify HEAD) || return 1
+    state=$(pr_worktree_state "$dir" "" entry) || return $?
+    registration=$(worktree_registration_state "$resolved_dir") || return $?
+    [ "$registration" = registered ] || return 1
   fi
 
   cd "$resolved_dir" || return 1
@@ -332,9 +335,11 @@ enter_worktree() {
   # prove Git resolves it to this worktree before any branch moves. A directory
   # that is not a worktree lets discovery escape up into the shared canonical
   # checkout, where a sibling session's branch would be clobbered.
-  local actual_toplevel
+  local actual_toplevel actual_identity expected_identity
   actual_toplevel=$(resolve_existing_dir_path "$(git rev-parse --path-format=absolute --show-toplevel 2>/dev/null)" 2>/dev/null || true)
-  if [ "$actual_toplevel" != "$resolved_dir" ]; then
+  actual_identity=$(git rev-parse --path-format=absolute --git-dir --git-common-dir) || return $?
+  expected_identity=$(printf '%s\n' "$state" | jq -r '.admin, .common') || return $?
+  if [ "$actual_toplevel" != "$resolved_dir" ] || [ "$actual_identity" != "$expected_identity" ]; then
     echo "Refusing scripts/pr operation for PR #$pr: expected worktree $resolved_dir, Git resolved ${actual_toplevel:-no repository}; scripts/pr refuses to mutate the shared canonical checkout." >&2
     return 1
   fi

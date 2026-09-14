@@ -388,16 +388,16 @@ resolve_existing_dir_path() {
   )
 }
 
-pr_worktree_cleanup_state() {
+pr_worktree_state() {
   local root common_dir
   root=$(common_repo_root) || return $?
   common_dir=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir) || return $?
   # Git omits damaged admin entries from its listing. Bind the exact backlink
   # separately, and distinguish genuine absence from an unreadable path.
-  node - "$root" "$common_dir" "$1" "${2:-}" <<'EOF_NODE'
+  node - "$root" "$common_dir" "$1" "${2:-}" "${3:-cleanup}" <<'EOF_NODE'
 const fs = require("node:fs");
 const path = require("node:path");
-const [root, common, requested, previousAdmin] = process.argv.slice(2);
+const [root, common, requested, previousAdmin, purpose] = process.argv.slice(2);
 function stat(file) {
   try { return fs.lstatSync(file); } catch (error) {
     if (error.code === "ENOENT") return undefined;
@@ -426,9 +426,25 @@ try {
   const adminStat = stat(adminRoot);
   if (adminStat && !adminStat.isDirectory()) throw new Error("damaged worktree metadata");
   const matches = [];
+  let ids;
+  // Reusing a healthy worktree needs its own identity, not proof that unrelated
+  // admin entries are readable. Destruction still requires the complete scan.
+  if (purpose === "entry" && targetStat) {
+    const gitfile = path.join(target, ".git");
+    if (!stat(gitfile)?.isFile()) {
+      throw new Error("unregistered or ambiguous PR worktree; scripts/pr refuses to mutate the shared canonical checkout");
+    }
+    const pointer = read(gitfile);
+    if (!pointer.startsWith("gitdir: ")) throw new Error("damaged worktree metadata");
+    const admin = path.resolve(target, pointer.slice(8));
+    if (path.dirname(admin) !== adminRoot) throw new Error("damaged worktree metadata");
+    ids = [path.basename(admin)];
+  } else {
+    ids = adminStat ? fs.readdirSync(adminRoot) : [];
+  }
   // Git preserves admin IDs across moves. Only readable, valid backlinks can
   // attribute entries; an unknown backlink cannot establish target absence.
-  for (const id of adminStat ? fs.readdirSync(adminRoot) : []) {
+  for (const id of ids) {
     const admin = path.join(adminRoot, id);
     if (!stat(admin)?.isDirectory()) throw new Error("damaged worktree metadata");
     const backlink = read(path.join(admin, "gitdir"));
@@ -439,9 +455,11 @@ try {
     }
     matches.push(admin);
   }
-  if (matches.length > 1) throw new Error("ambiguous worktree metadata");
+  if (matches.length > 1 || (purpose === "entry" && targetStat && matches.length !== 1)) {
+    throw new Error("ambiguous worktree metadata");
+  }
   process.stdout.write(JSON.stringify({
-    path: target, present: Boolean(targetStat), admin: matches[0] ?? "",
+    path: target, present: Boolean(targetStat), admin: matches[0] ?? "", common: commonDir,
     previousAdminPresent: previousAdmin ? Boolean(stat(previousAdmin)) : false,
   }) + "\n");
 } catch (error) {
@@ -475,7 +493,7 @@ require_worktree_cleanup_evidence() (
 
 remove_worktree_if_present() {
   local path="$1" state registered_path registration admin
-  state=$(pr_worktree_cleanup_state "$path") || return $?
+  state=$(pr_worktree_state "$path") || return $?
   registered_path=$(printf '%s\n' "$state" | jq -r '.path') || return $?
   admin=$(printf '%s\n' "$state" | jq -r '.admin') || return $?
   registration=$(worktree_registration_state "$registered_path") || return $?
@@ -491,7 +509,7 @@ remove_worktree_if_present() {
   # One native removal owns both the path and its exact admin entry. A partial
   # deletion still fails; neither repository-wide prune nor orphan trash is safe.
   git worktree remove --force -- "$registered_path" || return $?
-  state=$(pr_worktree_cleanup_state "$path" "$admin") || return $?
+  state=$(pr_worktree_state "$path" "$admin") || return $?
   registration=$(worktree_registration_state "$registered_path") || return $?
   if [ "$registration" != absent ] ||
     ! printf '%s\n' "$state" | jq -e --arg path "$registered_path" \
@@ -508,7 +526,7 @@ delete_local_branch_if_safe() {
   local existing status
   # for-each-ref can warn about a broken ref with status zero. Such a warning
   # is not proof of absence, so retain diagnostics in the validated result.
-  existing=$(git for-each-ref --format='%(refname)' -- "$ref" 2>&1) || {
+  existing=$(git for-each-ref --format="%(if:equals=$ref)%(refname)%(then)%(refname)%(end)" -- "$ref" 2>&1) || {
     status=$?; printf '%s\n' "$existing" >&2; return "$status"
   }
   [ -n "$existing" ] || return 0
@@ -524,7 +542,7 @@ delete_local_branch_if_safe() {
   # Git's branch owner rejects checked-out branches even with -D. Never bypass
   # that protection with raw ref deletion when a query or deletion fails.
   git branch -D -- "$branch" || return $?
-  existing=$(git for-each-ref --format='%(refname)' -- "$ref" 2>&1) || {
+  existing=$(git for-each-ref --format="%(if:equals=$ref)%(refname)%(then)%(refname)%(end)" -- "$ref" 2>&1) || {
     status=$?; printf '%s\n' "$existing" >&2; return "$status"
   }
   [ -z "$existing" ] || { printf 'Branch cleanup incomplete: %s\n' "$existing" >&2; return 1; }

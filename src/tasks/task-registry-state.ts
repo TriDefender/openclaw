@@ -403,7 +403,13 @@ export function restoreTaskRegistryOnce() {
     taskRegistryRestoreState = { status: "ready" };
     markTaskRegistryProjectionRestored();
     for (const task of settledTasks) {
-      syncFlowFromTaskAfterTaskMutation(task, "restore");
+      const flowId = task.parentFlowId?.trim();
+      if (
+        flowId &&
+        listTasksFromIndex(tasks, taskIdsByParentFlowId, flowId)[0]?.taskId === task.taskId
+      ) {
+        syncFlowFromTaskAfterTaskMutation(task, "restore");
+      }
     }
     if (restored.tasks.size || restored.deliveryStates.size) {
       emitTaskRegistryObserverEvent(() => ({ kind: "restored" }));

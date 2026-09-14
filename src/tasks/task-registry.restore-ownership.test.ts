@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
-import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
+import {
+  createInMemoryTaskFlowRegistryStore,
+  createInMemoryTaskRegistryStore,
+} from "../test-utils/task-registry-store.js";
+import { createTaskFlowForTask, getTaskFlowById } from "./task-flow-runtime-internal.js";
 import { reloadTaskRegistryFromStore } from "./task-registry-state.js";
 import { getTaskById } from "./task-registry.js";
 import { configureTaskRegistryRuntime } from "./task-registry.store.js";
@@ -13,7 +17,11 @@ import { loadTaskRegistryStateFromSqlite } from "./task-registry.store.sqlite.js
 import { createTaskFixture } from "./task-registry.test-support.js";
 import type { TaskExecutionOwner, TaskRecord } from "./task-registry.types.js";
 import { bindTaskRunOwner } from "./task-run-owner.js";
-import { resetTaskRegistryForTests } from "./task-runtime.test-helpers.js";
+import {
+  configureTaskFlowRegistryRuntime,
+  resetTaskFlowRegistryForTests,
+  resetTaskRegistryForTests,
+} from "./task-runtime.test-helpers.js";
 
 const children = new Set<ChildProcess>();
 
@@ -25,6 +33,7 @@ afterEach(async () => {
   }
   children.clear();
   resetTaskRegistryForTests({ persist: false });
+  resetTaskFlowRegistryForTests({ persist: false });
 });
 
 function ownerFor(pid: number): TaskExecutionOwner {
@@ -186,6 +195,50 @@ describe("task execution ownership on successor restore", () => {
     expect(store.loadSnapshot().tasks.get(task.taskId)?.status).toBe("running");
     expect((await waitForGatewayActiveWork(0)).drained).toBe(false);
   });
+
+  it.each(["running", "succeeded"] as const)(
+    "preserves a newer %s task's flow when an older execution is orphaned",
+    (successorStatus) => {
+      const owner = ownerFor(process.pid);
+      const { task } = restoreFixture(owner);
+      const now = Date.now();
+      const successor: TaskRecord = {
+        ...task,
+        taskId: "task-newer-execution",
+        runId: "harness:newer-execution",
+        task: "Newer task result",
+        status: successorStatus,
+        createdAt: now - 1_000,
+        ...(successorStatus === "succeeded" ? { endedAt: now } : {}),
+      };
+      configureTaskFlowRegistryRuntime({ store: createInMemoryTaskFlowRegistryStore() });
+      const flow = createTaskFlowForTask({ task: successor });
+      if (!flow) {
+        throw new Error("Fixture flow was not created");
+      }
+      const older: TaskRecord = {
+        ...task,
+        parentFlowId: flow.flowId,
+        executionOwner: { ...owner, startIdentity: owner.startIdentity + 1 },
+      };
+      configureTaskRegistryRuntime({
+        store: createInMemoryTaskRegistryStore({
+          tasks: new Map([
+            [older.taskId, older],
+            [successor.taskId, { ...successor, parentFlowId: flow.flowId }],
+          ]),
+          deliveryStates: new Map(),
+        }),
+      });
+      reloadTaskRegistryFromStore();
+      expect(getTaskById(older.taskId)?.status).toBe("cancelled");
+      expect(getTaskById(successor.taskId)?.status).toBe(successorStatus);
+      const restoredFlow = getTaskFlowById(flow.flowId);
+      expect(restoredFlow?.status).toBe(successorStatus);
+      expect(restoredFlow?.goal).toBe(successor.task);
+      expect(restoredFlow?.endedAt).toBe(successor.endedAt);
+    },
+  );
 
   it.each(["queued", "succeeded"] as const)("does not settle an already %s record", (status) => {
     const owner = ownerFor(process.pid);

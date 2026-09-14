@@ -137,6 +137,7 @@ it("admits a pair of manifests at the exact supported byte limit", async () => {
 }, 60_000);
 
 it("admits maximum legal path sets with a populated caller-owned hash memo", async () => {
+  const root = tempDirs.make("workspace-path-boundary-");
   const adapterUrl = new URL("./workspace-manifest-worker.ts", import.meta.url).href;
   const memoUrl = new URL("./workspace-hash-memo.ts", import.meta.url).href;
   const limitsUrl = new URL("./workspace-inventory-limits.ts", import.meta.url).href;
@@ -149,14 +150,10 @@ it("admits maximum legal path sets with a populated caller-owned hash memo", asy
       "--eval",
       `
       import { createHash } from "node:crypto";
-      import fs from "node:fs/promises";
-      import os from "node:os";
-      import path from "node:path";
       import { captureWorkspaceSnapshot } from ${JSON.stringify(adapterUrl)};
       import { withWorkspaceHashMemo, MAX_WORKSPACE_HASH_MEMO_BYTES } from ${JSON.stringify(memoUrl)};
       import { MAX_WORKSPACE_INVENTORY_ENTRIES, MAX_WORKSPACE_MANIFEST_BYTES } from ${JSON.stringify(limitsUrl)};
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-path-boundary-"));
-      try {
+      const root = ${JSON.stringify(root)};
         const paths = Array.from({ length: MAX_WORKSPACE_INVENTORY_ENTRIES }, (_, index) => String(index).padStart(6, "0").padEnd(224, "x") + "Ā");
         const jsonBytes = Buffer.byteLength(JSON.stringify({ version: 1, baseCommit: null, entries: paths.map(path => ({ path, type: "directory", mode: 0o700 })) }));
         if (jsonBytes > MAX_WORKSPACE_MANIFEST_BYTES) throw new Error("fixture paths exceed the supported manifest size");
@@ -169,9 +166,6 @@ it("admits maximum legal path sets with a populated caller-owned hash memo", asy
         const unchanged = memo.size === seeds.length && seeds.every(([identity, value]) => memo.get(identity) === value);
         const canonical = snapshot.manifestRef === "sha256:" + createHash("sha256").update(snapshot.rawManifest).digest("hex");
         process.stdout.write(JSON.stringify({ entries: snapshot.manifest.entries.length, directories: snapshot.manifest.directories.length, unchanged, canonical, jsonBytes, memoBytes }));
-      } finally {
-        await fs.rm(root, { recursive: true, force: true });
-      }
     `,
     ],
     { timeoutMs: 120_000, maxOutputBytes: 64 * 1024, killProcessTree: true },

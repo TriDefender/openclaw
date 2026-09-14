@@ -8,6 +8,11 @@ import {
   hasExecutionIdentityAdmissionSink,
 } from "../audit/execution-identity-admission.js";
 import { consumeChannelAdmissionEvidence } from "../channels/message-access/admission-evidence.js";
+import {
+  loadSessionEntryReadOnly,
+  persistSessionTranscriptTurn,
+  upsertSessionEntryCore,
+} from "../config/sessions/session-accessor.js";
 import type { CronServiceState } from "../cron/service/state.js";
 import { tryFinishCronTaskRunWithoutHistory } from "../cron/service/task-runs.js";
 import {
@@ -32,6 +37,7 @@ import {
   emitSessionTranscriptUpdate,
   type InternalSessionTranscriptUpdate,
 } from "../sessions/transcript-events.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import {
   createTaskRecord,
   markTaskLostById,
@@ -41,6 +47,7 @@ import {
 } from "../tasks/task-registry.js";
 import { getTaskRegistryObservers } from "../tasks/task-registry.store.js";
 import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
+import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { installInMemoryTaskRegistryRuntime } from "../test-utils/task-registry-runtime.js";
 import { abortChatRunById, registerChatAbortController } from "./chat-abort.js";
 import {
@@ -48,6 +55,7 @@ import {
   createSessionEventSubscriberRegistry,
   createSessionMessageSubscriberRegistry,
 } from "./server-chat-state.js";
+import { GatewayConnectionWork } from "./server-connection-work.js";
 import type { TaskEventPayload } from "./server-methods/task-summary.js";
 import {
   readTaskUpserts,
@@ -55,6 +63,7 @@ import {
   sessionTaskDefaults,
 } from "./server-runtime-subscriptions.task-ownership.test-support.js";
 import { lifecycleState, readLifecycleState } from "./server-runtime-subscriptions.test-support.js";
+import * as sessionObserverModel from "./session-observer-model.js";
 import { TerminalSessionManager } from "./terminal/session-manager.js";
 import {
   agentTerminalOwner,
@@ -186,6 +195,7 @@ type LifecycleTransition = { state: string; lifecycle?: ReturnType<typeof readLi
 
 function createParams(): SubscriptionParams {
   return {
+    signal: new AbortController().signal,
     log: mockLog,
     broadcast: vi.fn(),
     broadcastToConnIds: vi.fn(),
@@ -206,6 +216,93 @@ function createParams(): SubscriptionParams {
 
 describe("startGatewayEventSubscriptions", () => {
   let unsubs: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
+
+  it.each(["before startup", "before inherited connection drain"] as const)(
+    "cancels auxiliary model work %s",
+    async (phase) => {
+      const testState = await createOpenClawTestState({ scenario: "minimal" });
+      const connectionWork = new GatewayConnectionWork();
+      const target = { key: "agent:main:shutdown-recap", agentId: "main" };
+      const scope = {
+        sessionKey: target.key,
+        agentId: target.agentId,
+        sessionId: "shutdown-recap",
+      };
+      const finish = createDeferred<void>();
+      const prepared = vi.spyOn(sessionObserverModel, "defaultPrepareModel").mockResolvedValue({
+        config: {},
+        authProfileId: undefined,
+        provider: "test",
+        model: "utility",
+        agentId: "main",
+        agentDir: testState.path("agent"),
+        outputTextPolicy: "strict-visible",
+      });
+      const complete = vi
+        .spyOn(sessionObserverModel, "defaultCompleteModel")
+        .mockImplementation(() =>
+          trackAsyncWork(async () => {
+            await finish.promise;
+            return {
+              text: "Finished.",
+              provider: "test",
+              model: "utility",
+              owner: { kind: "harness", id: "test" },
+            };
+          }),
+        );
+      let draining: Promise<void> | undefined;
+      try {
+        runtimeConfigState.value = { agents: { defaults: { utilityModel: "test/utility" } } };
+        await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+        await persistSessionTranscriptTurn(scope, {
+          messages: Array.from({ length: 70 }, (_, index) => ({
+            eventId: `shutdown-message-${index}`,
+            message: { role: "user", content: `Work ${index}` },
+          })),
+          touchSessionEntry: false,
+        });
+        if (phase === "before startup") {
+          connectionWork.beginClose();
+        }
+        unsubs = startGatewayEventSubscriptions({
+          ...createParams(),
+          signal: connectionWork.signal,
+        });
+        if (phase === "before startup") {
+          expect(unsubs.sessionActivitySummaries.ensure(target).state).toBe("stale");
+          expect(complete).not.toHaveBeenCalled();
+          return;
+        }
+        await connectionWork.track(() => unsubs!.sessionActivitySummaries.ensure(target));
+        await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
+        const modelSignal = complete.mock.calls[0]![0].abortSignal!;
+        let drained = false;
+        draining = connectionWork.drain().then(() => {
+          drained = true;
+        });
+        expect(modelSignal.aborted).toBe(true);
+        expect(drained).toBe(false);
+        finish.resolve();
+        await draining;
+        await unsubs.agentUnsub();
+        expect(complete).toHaveBeenCalledOnce();
+        expect(loadSessionEntryReadOnly(scope)?.activitySummary).toBeUndefined();
+      } finally {
+        finish.resolve();
+        await unsubs?.agentUnsub();
+        unsubs?.heartbeatUnsub();
+        unsubs?.transcriptUnsub();
+        unsubs?.lifecycleUnsub();
+        await unsubs?.taskUnsub();
+        unsubs = undefined;
+        await draining;
+        prepared.mockRestore();
+        complete.mockRestore();
+        await testState.cleanup();
+      }
+    },
+  );
 
   beforeEach(() => {
     vi.clearAllMocks();

@@ -30,6 +30,9 @@ describe("OpenClawSchema desktop config", () => {
       OpenClawSchema.safeParse({ desktop: { host: { enabled: true, manageServer: true } } })
         .success,
     ).toBe(false);
+    // Labs reset removes the `enabled` leaf, leaving `desktop.host: {}` valid:
+    // unset means disabled for every runtime reader.
+    expect(OpenClawSchema.safeParse({ desktop: { host: {} } }).success).toBe(true);
   });
 
   it("projects labels and help from each desktop field schema", () => {

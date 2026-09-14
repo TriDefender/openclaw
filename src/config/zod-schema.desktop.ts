@@ -8,7 +8,7 @@ import { configUiMetadata } from "./zod-schema.sensitive.js";
 type DesktopHostConfig = NonNullable<DesktopConfig["host"]>;
 
 const DesktopHostConfigShape = {
-  enabled: z.boolean().register(configUiMetadata, {
+  enabled: z.boolean().optional().register(configUiMetadata, {
     label: "Gateway Host Desktop (Labs)",
     help: "Enables the experimental gateway-host desktop source. Restart the gateway after changing this setting.",
   }),

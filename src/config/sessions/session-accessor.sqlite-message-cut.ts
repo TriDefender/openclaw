@@ -4,7 +4,6 @@ import { uniqueStrings } from "@openclaw/normalization-core/string-normalization
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { assertModelSelectionUnlocked } from "../../sessions/model-overrides.js";
-import { extractAssistantPhaseText } from "../../shared/chat-message-content.js";
 import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
@@ -12,6 +11,7 @@ import {
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { readSessionBranchSummaries } from "./session-accessor.sqlite-branch-summaries.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
   collectSessionEntryLookupKeys,
@@ -43,6 +43,7 @@ import type {
 import { findSessionTranscriptHeader } from "./session-entry-codec.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import { inheritSessionSelection } from "./session-entry-selection.js";
+import { extractEditorText } from "./session-message-cut-content.js";
 import {
   markSessionTranscriptIndexDirtyInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
@@ -54,7 +55,7 @@ import {
   isSessionTranscriptLeafControl,
   scanSessionTranscriptTree,
   selectSessionTranscriptTreePathNodes,
-  type SessionTranscriptTree,
+  selectSessionTranscriptTreeTipNodes,
 } from "./transcript-tree.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 import { MIN_READABLE_SESSION_VERSION } from "./version.js";
@@ -76,7 +77,6 @@ type SessionTranscriptMutationResult =
 type SessionTranscriptMutationMode = "fork" | "rewind" | "switch";
 type SessionEntryExpectedState = Pick<SessionEntry, "lifecycleRevision" | "sessionId">;
 
-const BRANCH_HEADLINE_MAX_CHARS = 120;
 const SESSION_BRANCH_CACHE_MAX_ENTRIES = 32;
 
 type SessionBranchCacheEntry = {
@@ -84,7 +84,6 @@ type SessionBranchCacheEntry = {
   generation: string | null;
   maxSeq: number | null;
 };
-type SessionBranchPathSummary = Pick<SessionBranchSummary, "headline" | "messageCount">;
 
 // Branch listing must not scale with transcript size on every request. Appends advance max(seq),
 // while every in-place or replacement path rotates generation; cap the validated LRU at 32 sessions.
@@ -133,7 +132,7 @@ function loadSessionBranchSummaries(
     return cloneSessionBranchSummaries(cached.branches);
   }
 
-  const branches = summarizeSessionBranches(loadTranscriptEventsFromDatabase(database, sessionId));
+  const branches = readSessionBranchSummaries(database, sessionId);
   sessionBranchCache.delete(cacheKey);
   sessionBranchCache.set(cacheKey, { ...watermark, branches });
   pruneMapToMaxSize(sessionBranchCache, SESSION_BRANCH_CACHE_MAX_ENTRIES);
@@ -464,103 +463,10 @@ function validateBranchTip(
   if (isSessionTranscriptLeafControl(target.entry)) {
     return "not-branch-tip";
   }
-  if (!sessionBranchTipNodes(tree).some((node) => node.id === entryId)) {
+  if (!selectSessionTranscriptTreeTipNodes(tree).some((node) => node.id === entryId)) {
     return "not-branch-tip";
   }
   return tree.leafId === entryId ? "already-active" : undefined;
-}
-
-function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBranchSummary[] {
-  const tree = scanSessionTranscriptTree(events);
-  const pathSummaries = new Map<string, SessionBranchPathSummary>();
-  return (
-    sessionBranchTipNodes(tree)
-      .toSorted(
-        (left, right) =>
-          Number(right.id === tree.leafId) - Number(left.id === tree.leafId) ||
-          right.index - left.index,
-      )
-      // SAFETY: scanSessionTranscriptTree inserts every returned node into byId.
-      .map((node) => summarizeSessionBranch(tree, tree.byId.get(node.id)!, pathSummaries))
-  );
-}
-
-function sessionBranchTipNodes(tree: SessionTranscriptTree<TranscriptEvent>) {
-  const referencedParents = new Set(
-    tree.nodes.flatMap((node) =>
-      isSessionTranscriptLeafControl(node.entry) || node.parentId === null ? [] : [node.parentId],
-    ),
-  );
-  return tree.nodes.filter(
-    (node) =>
-      !isSessionTranscriptLeafControl(node.entry) &&
-      (node.id === tree.leafId || !referencedParents.has(node.id)),
-  );
-}
-
-function summarizeSessionBranch(
-  tree: SessionTranscriptTree<TranscriptEvent>,
-  leaf: SessionTranscriptTree<TranscriptEvent>["nodes"][number],
-  summaries: Map<string, SessionBranchPathSummary>,
-): SessionBranchSummary {
-  const uncachedPath: typeof tree.nodes = [];
-  const seen = new Set<string>();
-  let current = leaf;
-  // Stop at the first cached ancestor so every shared prefix is summarized once.
-  // A cycle still produces the empty summary returned by the path selector.
-  while (!summaries.has(current.id)) {
-    if (seen.has(current.id)) {
-      uncachedPath.length = 0;
-      break;
-    }
-    seen.add(current.id);
-    uncachedPath.push(current);
-    const parent = current.parentId === null ? undefined : tree.byId.get(current.parentId);
-    if (!parent) {
-      break;
-    }
-    current = parent;
-  }
-
-  let summary = summaries.get(current.id);
-  for (const node of uncachedPath.toReversed()) {
-    const record = asRecord(node.entry);
-    const headline = record?.type === "message" ? extractHeadlineText(record.message) : undefined;
-    summary = {
-      headline: headline ?? summary?.headline ?? "",
-      messageCount: (summary?.messageCount ?? 0) + (record?.type === "message" ? 1 : 0),
-    };
-    summaries.set(node.id, summary);
-  }
-
-  const timestamp = asRecord(leaf.entry)?.timestamp;
-  return {
-    leafEntryId: leaf.id,
-    headline: truncateBranchHeadline(summary?.headline ?? ""),
-    messageCount: summary?.messageCount ?? 0,
-    ...(typeof timestamp === "string" && timestamp.trim() ? { updatedAt: timestamp } : {}),
-    active: tree.leafId === leaf.id,
-  };
-}
-
-function extractHeadlineText(messageValue: unknown): string | undefined {
-  const message = asRecord(messageValue);
-  if (message?.role !== "user" && message?.role !== "assistant") {
-    return undefined;
-  }
-  const text =
-    message.role === "assistant"
-      ? extractAssistantPhaseText(message)
-      : extractEditorText(message.content ?? message.text);
-  const normalized = text?.replace(/\s+/g, " ").trim();
-  return normalized || undefined;
-}
-
-function truncateBranchHeadline(value: string): string {
-  const characters = Array.from(value);
-  return characters.length <= BRANCH_HEADLINE_MAX_CHARS
-    ? value
-    : `${characters.slice(0, BRANCH_HEADLINE_MAX_CHARS - 1).join("")}…`;
 }
 
 function resolveMessageCut(
@@ -662,22 +568,6 @@ function cloneMessageCutSessionEntry(params: {
       ? { forkSource: params.forkSource, parentSessionKey: params.forkSource.sessionKey }
       : {}),
   };
-}
-
-function extractEditorText(content: unknown): string | undefined {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const text = content
-    .flatMap((block) => {
-      const record = asRecord(block);
-      return record?.type === "text" && typeof record.text === "string" ? [record.text] : [];
-    })
-    .join("");
-  return text || undefined;
 }
 
 // Gateway-written inline images are already size-capped at send time; these bounds

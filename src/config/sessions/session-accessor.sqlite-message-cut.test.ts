@@ -48,7 +48,8 @@ afterEach(() => {
 function trackFullTranscriptLoads(env: NodeJS.ProcessEnv): () => number {
   const database = openOpenClawAgentDatabase({ agentId, env });
   const { counts } = trackSqliteStatementExecutions(database.db, ["loads"], (sqlText) =>
-    sqlText.includes('select "event_json" from "transcript_events"') &&
+    sqlText.includes('from "transcript_events"') &&
+    sqlText.includes('"event_json"') &&
     sqlText.includes('order by "seq" asc')
       ? "loads"
       : null,

@@ -3,7 +3,8 @@ import { buildAgentRunTerminalOutcome } from "../agents/agent-run-terminal-outco
 import { AGENT_RUN_RESTART_ABORT_STOP_REASON } from "../agents/run-termination.js";
 import { getFileLockProcessStartTime, isPidDefinitelyDead } from "../shared/pid-alive.js";
 import { mapAgentRunTerminalOutcomeToTaskStatus } from "./task-registry-common.js";
-import { applyTaskRecordPatch } from "./task-registry-records.js";
+import { applyTaskRecordPatch, normalizeTaskTimestamps } from "./task-registry-records.js";
+import type { TaskRegistryStore, TaskRegistryStoreSnapshot } from "./task-registry.store.js";
 import type { TaskExecutionOwner, TaskRecord } from "./task-registry.types.js";
 
 export function captureTaskExecutionOwner(pid = process.pid): TaskExecutionOwner | undefined {
@@ -24,15 +25,16 @@ function isTaskExecutionOwnerDead(owner: TaskExecutionOwner): boolean {
   return startIdentity !== null && startIdentity !== owner.startIdentity;
 }
 
-export function settleOrphanedTaskAtRestore(task: TaskRecord, now: number): TaskRecord {
-  if (
-    task.status !== "running" ||
-    task.endedAt !== undefined ||
-    !task.executionOwner ||
-    !isTaskExecutionOwnerDead(task.executionOwner)
-  ) {
-    return task;
-  }
+function hasOrphanedExecution(task: TaskRecord): boolean {
+  return (
+    task.status === "running" &&
+    task.endedAt === undefined &&
+    task.executionOwner !== undefined &&
+    isTaskExecutionOwnerDead(task.executionOwner)
+  );
+}
+
+function settleOrphanedTaskAtRestore(task: TaskRecord, now: number): TaskRecord {
   const reason = "Task execution process exited before restart.";
   const outcome = buildAgentRunTerminalOutcome({
     status: "error",
@@ -49,4 +51,42 @@ export function settleOrphanedTaskAtRestore(task: TaskRecord, now: number): Task
     terminalSummary: reason,
     terminalOutcome: undefined,
   });
+}
+
+function readRestoreSnapshot(store: TaskRegistryStore): TaskRegistryStoreSnapshot {
+  const snapshot = store.loadSnapshot();
+  return {
+    tasks: new Map([...snapshot.tasks].map(([id, task]) => [id, normalizeTaskTimestamps(task)])),
+    deliveryStates: snapshot.deliveryStates,
+  };
+}
+
+export function restoreTaskExecutionSnapshot(store: TaskRegistryStore): {
+  snapshot: TaskRegistryStoreSnapshot;
+  settledTasks: TaskRecord[];
+} {
+  const snapshot = readRestoreSnapshot(store);
+  if (![...snapshot.tasks.values()].some(hasOrphanedExecution)) {
+    return { snapshot, settledTasks: [] };
+  }
+  const settle = () => {
+    // Admission can yield to another writer; only its current rows authorize settlement.
+    const current = readRestoreSnapshot(store);
+    const settledTasks: TaskRecord[] = [];
+    const now = Date.now();
+    for (const [taskId, task] of current.tasks) {
+      if (!hasOrphanedExecution(task)) {
+        continue;
+      }
+      const next = settleOrphanedTaskAtRestore(task, now);
+      store.upsertTaskWithDeliveryState({
+        task: next,
+        deliveryState: current.deliveryStates.get(taskId),
+      });
+      current.tasks.set(taskId, next);
+      settledTasks.push(next);
+    }
+    return { snapshot: current, settledTasks };
+  };
+  return store.withMutation ? store.withMutation(settle) : settle();
 }

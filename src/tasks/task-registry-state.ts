@@ -11,7 +11,7 @@ import {
   registerOpenClawStateDatabaseLifecycleListener,
 } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import { settleOrphanedTaskAtRestore } from "./task-execution-owner.js";
+import { restoreTaskExecutionSnapshot } from "./task-execution-owner.js";
 import { syncFlowFromTaskResult } from "./task-flow-runtime-internal.js";
 import {
   cloneTaskRecord,
@@ -386,27 +386,8 @@ export function restoreTaskRegistryOnce() {
   }
   taskRegistryRestoreState = { status: "restoring" };
   try {
-    const store = getTaskRegistryStore();
-    const settledTasks: TaskRecord[] = [];
-    const restore = () => {
-      const snapshot = store.loadSnapshot();
-      const now = Date.now();
-      for (const [taskId, task] of snapshot.tasks) {
-        const normalized = normalizeTaskTimestamps(task);
-        const next = settleOrphanedTaskAtRestore(normalized, now);
-        if (next !== normalized) {
-          store.upsertTaskWithDeliveryState({
-            task: next,
-            deliveryState: snapshot.deliveryStates.get(taskId),
-          });
-          settledTasks.push(next);
-        }
-        snapshot.tasks.set(taskId, next);
-      }
-      return snapshot;
-    };
-    // Reread and settle under the writer's custody before publishing restored state.
-    const restored = store.withMutation ? store.withMutation(restore) : restore();
+    const { snapshot: restored, settledTasks } =
+      restoreTaskExecutionSnapshot(getTaskRegistryStore());
 
     clearTaskRegistryMemory();
     for (const [taskId, task] of restored.tasks) {

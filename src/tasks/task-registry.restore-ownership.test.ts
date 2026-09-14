@@ -148,11 +148,44 @@ describe("task execution ownership on successor restore", () => {
       const { task, store } = restoreFixture(
         kind === "foreign-host" && owner ? { ...owner, host: "other-host.invalid" } : owner,
       );
+      configureTaskRegistryRuntime({
+        store: {
+          ...store,
+          withMutation: () => {
+            throw new Error("Read-only restore must not require write admission");
+          },
+        },
+      });
+      reloadTaskRegistryFromStore();
       expect((await waitForGatewayActiveWork(0)).drained).toBe(false);
       expect(store.loadSnapshot().tasks.get(task.taskId)).toEqual(task);
       expect(getTaskById(task.taskId)?.endedAt).toBeUndefined();
     },
   );
+
+  it("rechecks execution ownership after settlement admission", async () => {
+    const liveOwner = ownerFor(process.pid);
+    const { task, store } = restoreFixture(liveOwner);
+    store.upsertTaskWithDeliveryState({
+      task: {
+        ...task,
+        executionOwner: { ...liveOwner, startIdentity: liveOwner.startIdentity + 1 },
+      },
+    });
+    configureTaskRegistryRuntime({
+      store: {
+        ...store,
+        withMutation: (operation) => {
+          store.upsertTaskWithDeliveryState({ task });
+          return operation();
+        },
+      },
+    });
+    reloadTaskRegistryFromStore();
+    expect(getTaskById(task.taskId)?.executionOwner).toEqual(liveOwner);
+    expect(store.loadSnapshot().tasks.get(task.taskId)?.status).toBe("running");
+    expect((await waitForGatewayActiveWork(0)).drained).toBe(false);
+  });
 
   it.each(["queued", "succeeded"] as const)("does not settle an already %s record", (status) => {
     const owner = ownerFor(process.pid);

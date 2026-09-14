@@ -13,6 +13,7 @@ import {
   loadTranscriptEvents,
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
+import * as sessionAccess from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { withTimeout } from "../infra/fs-safe.js";
@@ -184,10 +185,26 @@ afterEach(async () => {
   await state?.cleanup();
 });
 
-test.each(["registered", "github", "inherited"] as const)(
-  "visible spawn tool selects %s project through the write-scope Gateway",
-  async (source) => {
-    const otherRepository = await createRepository("tool-selected-project");
+test.each([
+  { source: "registered", worktree: true, required: false },
+  { source: "github", worktree: true, required: false },
+  { source: "inherited", worktree: true, required: false },
+  { source: "registered", worktree: false, required: false },
+  { source: "github", worktree: false, required: false },
+  { source: "registered", worktree: false, required: true },
+] as const)(
+  "visible spawn tool selects $source project through the write-scope Gateway (worktree=$worktree, required=$required)",
+  async ({ source, worktree, required }) => {
+    if (required) {
+      replaceSessionEntrySync(
+        { agentId: "main", sessionKey: parentKey, storePath },
+        { ...parent, sandbox: "required" },
+      );
+    }
+    const projectName = required
+      ? "non-git-workspace/tool-selected-project"
+      : "tool-selected-project";
+    const otherRepository = await createRepository(projectName);
     const project = await registerProjectRegistry({ path: otherRepository });
     projectCloneMocks.materializeProjectClone.mockResolvedValue(project);
     const { getRuntimeConfig } = await getGatewayConfigModule();
@@ -220,9 +237,9 @@ test.each(["registered", "github", "inherited"] as const)(
               : source === "github"
                 ? { projectGitUrl: "git@github.com:example/selected.git" }
                 : {}),
-            worktree: true,
-            worktreeName: "selected-child",
-            worktreeBaseRef: "main",
+            ...(worktree
+              ? { worktree: true, worktreeName: "selected-child", worktreeBaseRef: "main" }
+              : {}),
           }),
       );
       expect(result.details).toMatchObject({ status: "accepted" });
@@ -233,12 +250,22 @@ test.each(["registered", "github", "inherited"] as const)(
       await settleWorkspaceRuns(context, storePath, childKey);
       const child = loadSessionEntry({ agentId: "main", sessionKey: childKey, storePath });
       expect(child).toMatchObject({ parentSessionId: parent.sessionId });
+      if (required) {
+        expect(child?.sandbox).toBe("required");
+      }
       if (source !== "inherited") {
         expect(child?.projectId).toBe(project.id);
       }
-      expect(child?.worktree?.repoRoot).toBe(source === "inherited" ? repository : otherRepository);
+      if (worktree) {
+        expect(child?.worktree?.repoRoot).toBe(
+          source === "inherited" ? repository : otherRepository,
+        );
+      } else {
+        expect(child?.worktree).toBeUndefined();
+        expect(child?.spawnedCwd).toBe(otherRepository);
+      }
       expect(await fs.readFile(path.join(child!.spawnedCwd!, "README.md"), "utf8")).toBe(
-        source === "inherited" ? "selected-project\n" : "tool-selected-project\n",
+        source === "inherited" ? "selected-project\n" : `${projectName}\n`,
       );
       if (source === "github") {
         expect(projectCloneMocks.materializeProjectClone).toHaveBeenCalledWith(
@@ -257,9 +284,14 @@ test.each(["registered", "github", "inherited"] as const)(
   },
 );
 
-test.each(["registered", "github"] as const)(
-  "required parent rejects external %s project before worktree allocation with global sandbox off",
-  async (source) => {
+test.each([
+  { source: "registered", worktree: true },
+  { source: "github", worktree: true },
+  { source: "registered", worktree: false },
+  { source: "github", worktree: false },
+] as const)(
+  "required parent rejects external $source project before binding or allocation with global sandbox off (worktree=$worktree)",
+  async ({ source, worktree }) => {
     replaceSessionEntrySync(
       { agentId: "main", sessionKey: parentKey, storePath },
       { ...parent, sandbox: "required" },
@@ -273,10 +305,12 @@ test.each(["registered", "github"] as const)(
       trackExecution: async (run) => await run(),
     });
     const createWorktree = vi.spyOn(managedWorktrees, "create");
+    const bindChild = vi.spyOn(sessionAccess, "createSessionEntryWithTranscript");
+    const registerRun = vi.fn();
     const tool = createSessionsSpawnTool({
       agentSessionKey: parentKey,
       config: getRuntimeConfig(),
-      registerRun: vi.fn(),
+      registerRun,
       countActiveRuns: () => 0,
     });
     dispatchInboundMessageMock.mockResolvedValue({
@@ -284,6 +318,7 @@ test.each(["registered", "github"] as const)(
       counts: { block: 0, final: 0, tool: 0 },
     });
     let childKey: string | undefined;
+    let creationError: unknown;
     try {
       const result = await withPluginRuntimeGatewayContextResolver(
         () => context,
@@ -294,24 +329,36 @@ test.each(["registered", "github"] as const)(
             ...(source === "registered"
               ? { projectId: project.id }
               : { projectGitUrl: "https://github.com/example/restricted.git" }),
-            worktree: true,
-            worktreeName: "restricted-project-child",
+            ...(worktree ? { worktree: true, worktreeName: "restricted-project-child" } : {}),
           }),
-      );
-      if (isRecord(result.details) && typeof result.details.childSessionKey === "string") {
+      ).catch((error: unknown) => {
+        creationError = error;
+        return undefined;
+      });
+      if (isRecord(result?.details) && typeof result.details.childSessionKey === "string") {
         childKey = result.details.childSessionKey;
       }
       await settleWorkspaceRuns(context, storePath, childKey);
       const child = childKey
         ? loadSessionEntry({ agentId: "main", sessionKey: childKey, storePath })
         : undefined;
-      expect(child).toMatchObject({ sandbox: "required", status: "failed" });
+      if (source === "registered" && !worktree) {
+        expect(creationError).toMatchObject({
+          message: expect.stringContaining("outside the sandboxed agent workspace"),
+        });
+        expect(childKey).toBeUndefined();
+        expect(bindChild).not.toHaveBeenCalled();
+        expect(registerRun).not.toHaveBeenCalled();
+      } else {
+        expect(creationError).toBeUndefined();
+        expect(child).toMatchObject({ sandbox: "required", status: "failed" });
+        expect(child?.lastRunError).toContain("outside the sandboxed agent workspace");
+      }
       expect(createWorktree).not.toHaveBeenCalled();
-      expect(managedWorktrees.findLiveByOwner("session", childKey!)).toBeUndefined();
+      if (childKey) {
+        expect(managedWorktrees.findLiveByOwner("session", childKey)).toBeUndefined();
+      }
       expect(child?.worktree).toBeUndefined();
-      expect(
-        child?.lastRunError ?? (isRecord(result.details) ? result.details.error : undefined),
-      ).toContain("outside the sandboxed agent workspace");
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       await settleWorkspaceRuns(context, storePath, childKey, true);
@@ -319,6 +366,23 @@ test.each(["registered", "github"] as const)(
     }
   },
 );
+
+test("required parent rejects immediate registered-project worktree preparation", async () => {
+  replaceSessionEntrySync(
+    { agentId: "main", sessionKey: parentKey, storePath },
+    { ...parent, sandbox: "required" },
+  );
+  const project = await registerProjectRegistry({ path: repository });
+  const createWorktree = vi.spyOn(managedWorktrees, "create");
+  const key = "agent:main:dashboard:required-immediate-project";
+  const result = await createChild({ key, projectId: project.id });
+  expect(result).toMatchObject({
+    ok: false,
+    error: { message: "sessions.create project is outside the sandboxed agent workspace" },
+  });
+  expect(createWorktree).not.toHaveBeenCalled();
+  expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
+});
 
 test("visible spawn tool preserves project validation and external cwd authorization", async () => {
   const project = await registerProjectRegistry({ path: repository });

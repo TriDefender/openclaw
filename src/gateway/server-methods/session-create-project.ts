@@ -364,6 +364,7 @@ export async function prepareSessionWorkspace(params: {
       }
       // Retries inherit workspace intent, not a previous caller's setup authority.
       const result = await prepareSessionWorktree({
+        cfg,
         target: { ...target, key: sessionKey, entry: saved },
         workspace: directory,
         name: pending.name,

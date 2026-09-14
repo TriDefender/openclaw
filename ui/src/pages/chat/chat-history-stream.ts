@@ -75,6 +75,25 @@ function resolveInFlightAssistantText(bufferedText: unknown): string | null {
     : null;
 }
 
+function replayedCommentaryItemIds(
+  run: NonNullable<ChatHistoryResult["inFlightRun"]>,
+): ReadonlySet<string> {
+  const itemIds = new Set<string>();
+  for (const event of run.events ?? []) {
+    const itemId = event.data.itemId;
+    if (
+      event.runId === run.runId &&
+      event.stream === "item" &&
+      event.data.kind === "preamble" &&
+      typeof itemId === "string" &&
+      itemId.trim()
+    ) {
+      itemIds.add(itemId.trim());
+    }
+  }
+  return itemIds;
+}
+
 function onlyInFlightRunProjectionChanged(
   previous: ReturnType<typeof getChatSessionProjection>["runs"],
   current: ReturnType<typeof getChatSessionProjection>["runs"],
@@ -265,6 +284,7 @@ export function applyHistoryRun(params: {
           state.chatStream,
           inFlightRunId,
           boundary?.index,
+          replayedCommentaryItemIds(run),
         );
   const prefix = state.chatStream?.slice(0, state.chatStream.length - (tail?.length ?? 0)) ?? "";
   const accumulated = accumulatedStreamText(state.chatStreamSegments ?? []);

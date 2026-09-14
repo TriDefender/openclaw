@@ -1846,6 +1846,11 @@ describePosix("scripts/pr per-PR operation lock", () => {
       git("push", "-q", "origin", `${preparedHead}:refs/heads/main`);
       git("fetch", "-q", "origin", "refs/heads/main:refs/remotes/origin/main");
       git("worktree", "add", "-q", "-b", "temp/pr-42", worktreeDir);
+      const registeredPath = realpathSync(worktreeDir);
+      const worktreeAdmin = git("-C", worktreeDir, "rev-parse", "--absolute-git-dir");
+      for (const branch of ["pr-42", "pr-42-prep"]) {
+        git("branch", branch, preparedHead);
+      }
       if (wrapper === "linked") {
         // origin/main still names the linked wrapper; canonical code must not
         // be substituted merely to obtain the persistent supervisor cwd.
@@ -1925,6 +1930,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
           timeout: 15_000,
           env: {
             ...process.env,
+            canonical_repo_root: join(repoDir, "untrusted-root"),
             OPENCLAW_GH_BIN: gh,
             OPENCLAW_PR_AUTO_MERGE: "0",
             OPENCLAW_PR_MERGE_METHOD: "merge",
@@ -1944,6 +1950,17 @@ describePosix("scripts/pr per-PR operation lock", () => {
       const events = readFileSync(lifecycle, "utf8");
       expect(git("rev-parse", "HEAD")).toBe(canonicalHead);
       expect(existsSync(worktreeDir), output).toBe(failure === "merge");
+      expect(existsSync(worktreeAdmin), output).toBe(failure === "merge");
+      expect(
+        git("worktree", "list", "--porcelain", "-z").includes(`worktree ${registeredPath}\0`),
+        output,
+      ).toBe(failure === "merge");
+      for (const branch of ["temp/pr-42", "pr-42", "pr-42-prep"]) {
+        const ref = `refs/heads/${branch}`;
+        expect(git("for-each-ref", "--format=%(refname)", "--", ref), output).toBe(
+          failure === "merge" ? ref : "",
+        );
+      }
       if (failure === "merge") {
         expect(result.status, output).toBe(1);
         expect(output).toContain("fixture merge failed");
@@ -1954,7 +1971,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
         expect(events, output).toBe(completedEvents + (failure === "none" ? "released\n" : ""));
         expect(readFileSync(releaseCwd, "utf8").trim(), output).toBe(repoDir);
         expect(result.status, output).toBe(failure === "none" ? 0 : 1);
-        expect(result.stdout).toContain(
+        expect(result.stdout, output).toContain(
           command === "gc" ? "removed .worktrees/pr-42" : "Merge confirmed; completion pending",
         );
       }

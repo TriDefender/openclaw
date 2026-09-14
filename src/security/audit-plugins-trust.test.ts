@@ -42,7 +42,7 @@ const mockPluginRegistryIds = vi.hoisted(() => [
 ]);
 
 const readInstalledPackageVersionMock = vi.hoisted(() =>
-  vi.fn(async (dir: string) => {
+  vi.fn(async (dir: string): Promise<string | undefined> => {
     if (dir.includes("/extensions/voice-call") || dir.includes("\\extensions\\voice-call")) {
       return "9.9.9";
     }

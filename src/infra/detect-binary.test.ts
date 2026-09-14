@@ -118,11 +118,13 @@ describe.skipIf(process.platform === "win32")("detectBinary POSIX path traversal
         const link = path.join(root, "tool-link");
         fs.writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
         fs.symlinkSync(file, link);
-        await expect(detectBinary(file)).resolves.toBe(true);
-        await expect(detectBinary(link)).resolves.toBe(true);
         // Do not use path.join: it would remove the invalid suffix from the fixture.
+        // macOS can reuse a successful X_OK lookup for later file/../ traversal.
+        // Check rejection before the positive controls warm that native lookup.
         await expect(detectBinary(`${file}${suffix}`)).resolves.toBe(false);
         await expect(detectBinary(`${link}${suffix}`)).resolves.toBe(false);
+        await expect(detectBinary(file)).resolves.toBe(true);
+        await expect(detectBinary(link)).resolves.toBe(true);
         expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
       } finally {
         fs.rmSync(root, { recursive: true, force: true });

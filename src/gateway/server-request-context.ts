@@ -98,6 +98,7 @@ type GatewayRequestContextRuntime = Pick<
     | "getAttachedGatewayMethodRegistry"
   > & {
     sessionObserver: NonNullable<GatewayRequestContext["sessionObserver"]>;
+    sessionActivitySummaries?: GatewayRequestContext["sessionActivitySummaries"];
     sessionCompanion: NonNullable<GatewayRequestContext["sessionCompanion"]>;
     isConnectionActive: NonNullable<GatewayRequestContext["isConnectionActive"]>;
     clients: Set<GatewayWsClient>;
@@ -219,6 +220,7 @@ export function createGatewayRequestContext(
     sessionEventSubscribers,
     sessionMessageSubscribers,
     sessionObserver,
+    sessionActivitySummaries,
   } = runtime;
   const { getPortalService } = runtime.transportBridge;
   const workerSessionPlacementService = runtime.workerEnvironmentStartup?.placementStore;
@@ -259,6 +261,7 @@ export function createGatewayRequestContext(
     sessionViewerPresence: runtimeState.sessionViewerPresence,
     sessionCompanion: runtime.sessionCompanion,
     sessionObserver,
+    sessionActivitySummaries,
     mentionInbox: runtime.mentionInbox,
     applyPluginLifecycleChange: runtime.kernel.applyPluginLifecycleChange,
     getMcpAppSandboxPort: runtime.transportBridge.getMcpAppSandboxPort,

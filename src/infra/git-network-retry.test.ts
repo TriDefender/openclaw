@@ -91,7 +91,7 @@ describe.each([
       {
         ...failure,
         stderr:
-          "error: https://fixture-user:fixture-secret@example.invalid/private-repo.git did not send all necessary objects",
+          "error: origin did not send all necessary objects\nprivate diagnostic must not be logged",
       },
       success,
     );

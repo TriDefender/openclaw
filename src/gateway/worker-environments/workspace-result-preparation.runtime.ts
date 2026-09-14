@@ -53,7 +53,7 @@ function quoteFastImportPath(entryPath: string): string {
   return `${quoted}"`;
 }
 
-export async function prepareWorkspaceStageInput(
+export async function buildWorkspaceStageInput(
   params: WorkspaceManifestComputationOperations["workspace.manifest.stage-input"]["input"],
 ): Promise<Uint8Array> {
   const stagedResultRef = requireWorkerResultStorageRef(params.stagedResultRef);

@@ -30,7 +30,7 @@ import {
   loadStagedWorkerWorkspace,
   readStagedWorkerWorkspaceEntry,
 } from "./workspace-result-inventory.runtime.js";
-import { prepareWorkspaceStageInput } from "./workspace-result-preparation.runtime.js";
+import { buildWorkspaceStageInput } from "./workspace-result-preparation.runtime.js";
 
 function decodeManifestValue<Type extends keyof WorkspaceManifestValueInputs>(command: {
   type: Type;
@@ -89,7 +89,7 @@ export async function executeWorkspaceManifestComputation(
     case "workspace.manifest.staged":
       return await loadStagedWorkerWorkspace(command.input.root, command.input.ref);
     case "workspace.manifest.stage-input":
-      return await prepareWorkspaceStageInput(command.input);
+      return await buildWorkspaceStageInput(command.input);
     case "workspace.manifest.entry":
       return ownedGitWorkerBytes(
         await readStagedWorkerWorkspaceEntry(

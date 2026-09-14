@@ -1505,7 +1505,8 @@ exit 99
   it.each([
     ...preflightCases.map((scenario) => ({ ...scenario, route: "default", esmParent: false })),
     { ...preflightCases[0]!, route: "override", esmParent: false },
-    ...["default", "override"].map((route) => ({ ...esmPreflightCase, route, esmParent: true })),
+    { ...esmPreflightCase, route: "default", esmParent: true },
+    { ...esmPreflightCase, route: "override", esmParent: true },
   ])("GitHub API preflight: $name ($route)", ({ route, esmParent, ...scenario }) => {
     const root = tempDirs.make("openclaw-pr-auth-");
     const dir = esmParent ? join(root, "fixture") : root;

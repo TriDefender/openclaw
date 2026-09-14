@@ -37,7 +37,7 @@ async function screenshot(page: Page, name: string) {
   }
 }
 
-function sessionRow(sharingRole: "owner" | "viewer") {
+function sessionRow(sharingRole: "owner" | "viewer", kind: "direct" | "group" = "direct") {
   return {
     count: 1,
     defaults: { contextTokens: null, model: "gpt-5.5", modelProvider: "openai" },
@@ -45,7 +45,7 @@ function sessionRow(sharingRole: "owner" | "viewer") {
     sessions: [
       {
         key: sessionKey,
-        kind: "direct",
+        kind,
         label: "Main",
         sessionId: "session-main",
         status: "done",
@@ -214,14 +214,11 @@ suite.define(() => {
           { id: "zoe", name: "Zoe", watchedSessions: ["main", sessionKey] },
         ],
         methodResponses: {
-          "sessions.list": {
-            ...sessionRow("viewer"),
-            sessions: sessionRow("viewer").sessions.map((row) => ({ ...row, kind })),
-          },
+          "sessions.list": sessionRow("viewer", kind),
           "session.suggestions.list": { suggestions: [], role: "viewer" },
           "session.typing": { ok: true, broadcast: true },
         },
-        sessions: sessionRow("viewer").sessions.map((row) => ({ ...row, kind })),
+        sessions: sessionRow("viewer", kind).sessions,
       });
 
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));

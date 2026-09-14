@@ -26,6 +26,7 @@ import {
   resolveGatewaySessionStoreTargetWithStore,
 } from "../session-utils.js";
 import { projectSessionsPatchEntry } from "../sessions-patch.js";
+import { WorkerInferenceSessionDrainBusyError } from "../worker-environments/inference-control-internal.js";
 import {
   prepareSessionWorkerPlacementMutationCheck,
   SessionWorkerPlacementStopError,
@@ -275,6 +276,15 @@ export async function prepareSessionPatchArchive(params: {
   } catch (error) {
     if (error instanceof SessionLifecycleWorkspaceRecoveryError) {
       return err(error.error);
+    }
+    if (error instanceof WorkerInferenceSessionDrainBusyError) {
+      return err(
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          `Session ${target.key} is already being stopped by another archive or delete request. Wait for that request to finish.`,
+          { retryable: true },
+        ),
+      );
     }
     if (error instanceof SessionWorkerPlacementStopError) {
       return err(errorShape(ErrorCodes.UNAVAILABLE, error.message, { retryable: true }));

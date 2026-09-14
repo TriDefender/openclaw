@@ -235,6 +235,8 @@ function restorePluginArgumentViews(
         }
       }
       const keys = original ? undefined : Reflect.ownKeys(value);
+      let firstChild: object | undefined;
+      let moreChildren: object[] | undefined;
       // Caller methods and accessors can depend on this exact object's identity.
       // Keep their containers opaque instead of cloning them to restore a nested handle.
       if (keys) {
@@ -243,16 +245,27 @@ function restorePluginArgumentViews(
           if (!("value" in descriptor) || typeof descriptor.value === "function") {
             return;
           }
+          if (descriptor.value && typeof descriptor.value === "object") {
+            if (firstChild === undefined) {
+              firstChild = descriptor.value;
+            } else {
+              (moreChildren ??= []).push(descriptor.value);
+            }
+          }
         }
       }
       parents.set(value, parent);
       if (original) {
         replacements.set(value, original);
       } else {
-        // All own members are data properties, and this synchronous walk runs no
-        // caller code that could change them between inspection and reading.
-        for (const key of keys!) {
-          visit(Reflect.get(value, key), value);
+        // Descend only after every member passed the data-only check.
+        if (firstChild) {
+          visit(firstChild, value);
+        }
+        if (moreChildren) {
+          for (const child of moreChildren) {
+            visit(child, value);
+          }
         }
       }
     }

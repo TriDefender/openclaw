@@ -12,6 +12,7 @@ import {
   UPDATE_EFFECTIVE_CHANNEL_ENV,
 } from "../../infra/update-channels.js";
 import { resolveUpdateInstallKind } from "../../infra/update-check.js";
+import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { normalizeUpdatePostInstallDoctorWarnings } from "../../infra/update-doctor-result.js";
 import { POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV } from "../../infra/update-post-core-context.js";
 import {
@@ -54,14 +55,18 @@ import {
 } from "./update-command-plugins.js";
 import { UpdateCommandFailure } from "./update-command-result.js";
 import { completeSourceUpdateRuntime } from "./update-command-runtime.js";
-import { resolveServiceRefreshEnv, withUpdateInProgressEnv } from "./update-command-service-env.js";
+import {
+  resolveServiceRefreshEnv,
+  withOwnedManagedUpdateEnv,
+  withUpdateInProgressEnv,
+} from "./update-command-service-env.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 import { UpdateFinalizationLifecycle } from "./update-finalization-lifecycle.js";
 
 export async function updateFinalizeCommand(
   opts: UpdateFinalizeOptions,
-  recoveryRunIds: readonly string[] = [],
+  recoveryRunIds?: readonly string[],
 ): Promise<void> {
   const invocationCwd = tryResolveInvocationCwd();
   suppressDeprecations();
@@ -93,7 +98,8 @@ export async function updateFinalizeCommand(
             recoverOrphanedSidecars: false,
           });
           await retainCliProcessJobUntilExit();
-          const admittedRunId = lifecycle.attachLedger();
+          // Public repair supplies a recovery selection, even when it is empty.
+          const admittedRunId = lifecycle.attachLedger(recoveryRunIds !== undefined);
           const resolvedRoot = await resolveUpdateRoot();
           const resolvedInstallKind = await resolveUpdateInstallKind(resolvedRoot, {
             timeoutMs: lifecycle.budget("preflight"),
@@ -103,26 +109,39 @@ export async function updateFinalizeCommand(
         }),
       );
       lifecycle.root = root;
-      const target = { root, env: resolveServiceRefreshEnv(process.env, invocationCwd) };
-      await withUpdateFailureTriage(
-        { ...opts, invocationCwd, run: { runId, env: target.env } },
-        target,
-        () =>
-          withUpdateInProgressEnv(invocationCwd, async () => {
-            try {
-              const prepared = await lifecycle.run("targetConfigValidation", () =>
-                prepareUpdateFinalization(opts, root, installKind, requestedChannel),
-              );
-              await updateFinalizeCommandInternal(opts, prepared, lifecycle, recoveryRunIds);
-            } catch (error) {
-              if (error instanceof UpdateCommandFailure) {
-                lifecycle.complete(error.exitCode);
-              } else {
-                lifecycle.fail();
+      const target = {
+        root,
+        env: {
+          ...resolveServiceRefreshEnv(process.env, invocationCwd),
+          [UPDATE_RUN_ID_ENV]: runId,
+        },
+      };
+      await withOwnedManagedUpdateEnv(target.env, () =>
+        withUpdateFailureTriage(
+          { ...opts, invocationCwd, run: { runId, env: target.env } },
+          target,
+          () =>
+            withUpdateInProgressEnv(invocationCwd, async () => {
+              try {
+                const prepared = await lifecycle.run("targetConfigValidation", () =>
+                  prepareUpdateFinalization(opts, root, installKind, requestedChannel),
+                );
+                await updateFinalizeCommandInternal(
+                  opts,
+                  prepared,
+                  lifecycle,
+                  recoveryRunIds ?? [],
+                );
+              } catch (error) {
+                if (error instanceof UpdateCommandFailure) {
+                  lifecycle.complete(error.exitCode);
+                } else {
+                  lifecycle.fail();
+                }
+                throw error;
               }
-              throw error;
-            }
-          }),
+            }),
+        ),
       );
     } catch (error) {
       if (!lifecycle.completed) {

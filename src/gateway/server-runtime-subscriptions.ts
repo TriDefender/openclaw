@@ -147,7 +147,7 @@ export function startGatewayEventSubscriptions(params: {
   });
   let sessionBackgroundStop: Promise<void> | undefined;
   // Auxiliary model calls can inherit request work; cancel before that work drains.
-  const stopSessionBackgroundWork = () => {
+  const stopSessionBackgroundWork = (): void => {
     if (!sessionBackgroundStop) {
       sessionCompanion.dispose();
       sessionObserver.dispose();
@@ -156,11 +156,10 @@ export function startGatewayEventSubscriptions(params: {
         params.log.warn(`session background cleanup failed: ${String(error)}`);
       });
     }
-    return sessionBackgroundStop;
   };
   params.signal.addEventListener("abort", stopSessionBackgroundWork, { once: true });
   if (params.signal.aborted) {
-    void stopSessionBackgroundWork();
+    stopSessionBackgroundWork();
   }
   const unsubscribePrivateAuditEvents = auditEnabled
     ? onAgentAuditEvent(auditRecorder.record)
@@ -511,7 +510,8 @@ export function startGatewayEventSubscriptions(params: {
   const agentUnsub = async () => {
     unsubscribeAgentEvents();
     params.signal.removeEventListener("abort", stopSessionBackgroundWork);
-    await stopSessionBackgroundWork();
+    stopSessionBackgroundWork();
+    await sessionBackgroundStop;
     unsubscribePrivateAuditEvents?.();
     unsubscribeToolAuditEvents?.();
     unsubscribeMessageAuditEvents?.();

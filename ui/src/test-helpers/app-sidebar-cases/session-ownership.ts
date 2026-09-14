@@ -366,18 +366,8 @@ describe("AppSidebar session ownership", () => {
         sidebar.querySelector('[data-session-key="agent:main:collab"] .session-owner-stack'),
       ).not.toBeNull();
 
-      const menu = await openOwnerMenu(sidebar);
-      expect(menu.querySelector('[value="involving-me"]')?.textContent).toContain("Involving me");
-      menu.dispatchEvent(
-        new CustomEvent("wa-select", {
-          bubbles: true,
-          detail: { item: { value: "involving-me" } },
-        }),
-      );
-      await sidebar.updateComplete;
+      await selectSessionMenuValue(sidebar, "involving-me");
       expect(harness.list).toHaveBeenCalledWith(expect.objectContaining({ involvingMe: true }));
-      await waitForFast(() => expect(sidebar.sessionData.sessionsLoading).toBe(false));
-      await sidebar.updateComplete;
       const soloRow = () => sidebar.querySelector(`[data-session-key="${solo.key}"]`)!;
       const sharedRow = () => sidebar.querySelector(`[data-session-key="${shared.key}"]`)!;
       expect(soloRow().querySelector("openclaw-session-owner-chip")).toBeNull();

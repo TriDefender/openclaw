@@ -357,13 +357,17 @@ suite.define(() => {
 
     try {
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-      const row = page.locator(`[data-session-key="${sessionKey}"]`);
+      const sidebar = page.locator("openclaw-app-sidebar");
+      const row = sidebar.locator(`[data-session-key="${sessionKey}"]`);
+      const archiveAction = sidebar
+        .locator("openclaw-session-menu")
+        .getByRole("menuitem", { name: "Archive session", exact: true });
       await row.waitFor({ state: "visible", timeout: 10_000 });
       await page.getByText("Research thread content").waitFor({ state: "visible" });
       await captureUiProof(suite, page, "archive-current-thread-before.png");
       await row.hover();
       await row.getByRole("button", { name: "Open session menu" }).click();
-      await activateSelfRemovingControl(page.getByRole("menuitem", { name: "Archive session" }));
+      await activateSelfRemovingControl(archiveAction);
       await gateway.waitForRequest("sessions.patch");
 
       await row.waitFor({ state: "detached" });
@@ -393,7 +397,7 @@ suite.define(() => {
 
       await gateway.deferNext("sessions.patch");
       await row.click({ button: "right" });
-      await activateSelfRemovingControl(page.getByRole("menuitem", { name: "Archive session" }));
+      await activateSelfRemovingControl(archiveAction);
       await expect.poll(async () => (await gateway.getRequests("sessions.patch")).length).toBe(2);
       await row.waitFor({ state: "detached" });
 
